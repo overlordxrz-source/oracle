@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Oracle</title>
+<link rel="icon" href="/favicon.ico" type="image/svg+xml">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<style>
+:root {
+  --bg: #0b0f14; --panel: #111821; --panel-2: #17212c; --line: #243241;
+  --text: #d9e2ec; --muted: #8394a7; --accent: #f5b942; --accent-2: #4fd1c5;
+  --danger: #ff5a5a; --ok: #6ad48a;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 13px/1.45 var(--sans); }
+#app { display: grid; grid-template-columns: 380px 1fr; height: 100%; }
+#panel { background: var(--panel); border-right: 1px solid var(--line); overflow-y: auto; display: flex; flex-direction: column; }
+#map { height: 100%; background: #05080b; }
+header { padding: 14px 16px 10px; border-bottom: 1px solid var(--line); }
+header h1 { margin: 0; font: 600 15px/1 var(--mono); letter-spacing: .32em; color: var(--accent); }
+header p { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
+section { padding: 12px 16px; border-bottom: 1px solid var(--line); }
+section h2 { margin: 0 0 8px; font: 600 10px/1 var(--mono); letter-spacing: .18em; text-transform: uppercase; color: var(--muted); }
+label { display: block; color: var(--muted); font-size: 11px; margin: 6px 0 3px; }
+input, select, button { font: inherit; color: var(--text); }
+input[type=text], input[type=date], input[type=number], select {
+  width: 100%; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; outline: none;
+}
+input:focus, select:focus { border-color: var(--accent); }
+.row { display: flex; gap: 8px; } .row > * { flex: 1; min-width: 0; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.chip { border: 1px solid var(--line); background: var(--panel-2); border-radius: 999px; padding: 3px 9px; cursor: pointer; font-size: 11px; color: var(--muted); }
+.chip:hover { color: var(--text); }
+.src { display: flex; align-items: center; gap: 8px; padding: 4px 0; cursor: pointer; }
+.src input { accent-color: var(--accent); }
+.src .res { margin-left: auto; font: 11px var(--mono); color: var(--accent-2); }
+.src small { color: var(--muted); display: block; font-size: 10.5px; }
+button.primary { width: 100%; margin-top: 10px; background: var(--accent); color: #1a1205; border: 0; border-radius: 6px; padding: 9px; font-weight: 700; letter-spacing: .06em; cursor: pointer; }
+button.primary:disabled { opacity: .5; cursor: progress; }
+button.ghost { background: transparent; border: 1px solid var(--line); border-radius: 5px; padding: 4px 8px; cursor: pointer; font-size: 11px; color: var(--text); }
+button.ghost:hover { border-color: var(--accent); color: var(--accent); }
+#status { color: var(--muted); font-size: 12px; min-height: 18px; }
+#status.err { color: var(--danger); }
+#results { padding: 8px 10px 40px; }
+.card { display: grid; grid-template-columns: 64px 1fr; gap: 10px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; background: var(--panel-2); }
+.card.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.thumb { width: 64px; height: 64px; border-radius: 5px; background: #0a0e13 center/cover no-repeat; display: grid; place-items: center; font: 600 15px var(--mono); color: var(--muted); }
+.meta { min-width: 0; }
+.meta .top { display: flex; align-items: baseline; gap: 6px; }
+.badge { font: 600 10px/1 var(--mono); padding: 3px 6px; border-radius: 4px; letter-spacing: .05em; text-transform: uppercase; }
+.gsd { margin-left: auto; font: 700 13px var(--mono); color: var(--accent-2); }
+.meta .line { color: var(--muted); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.actions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.shipsum { margin-top: 6px; font-size: 11.5px; }
+.shipsum ol { margin: 4px 0 0; padding-left: 18px; max-height: 160px; overflow: auto; }
+.shipsum li { cursor: pointer; } .shipsum li:hover { color: var(--accent); }
+#opacity-box { position: absolute; z-index: 500; right: 12px; bottom: 26px; background: rgba(17,24,33,.92); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: none; min-width: 220px; }
+#opacity-box .t { font-size: 11px; color: var(--muted); margin-bottom: 4px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#opacity-box input { width: 100%; accent-color: var(--accent); }
+.leaflet-container { font: 12px var(--sans); }
+.leaflet-popup-content { font-size: 12px; }
+.note { color: var(--muted); font-size: 11px; margin-top: 8px; }
+.errs { color: var(--danger); font-size: 11.5px; margin: 0 10px; }
+@media (max-width: 820px) {
+  #app { grid-template-columns: 1fr; grid-template-rows: 52vh 1fr; }
+  main { grid-row: 1; } #panel { grid-row: 2; border-right: 0; border-top: 1px solid var(--line); }
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <aside id="panel">
+    <header>
+      <h1>ORACLE</h1>
+      <p>Free sub-metre to 10 m imagery, optical + radar, any point on Earth.</p>
+    </header>
+    <section>
+      <h2>Where</h2>
+      <div class="row">
+        <input id="where" type="text" placeholder="Place, or lat,lon — or click the map" autocomplete="off">
+      </div>
+      <div class="row">
+        <div><label for="radius">Radius (km)</label><input id="radius" type="number" value="3" min="0.2" max="50" step="0.5"></div>
+        <div><label>&nbsp;</label><button class="ghost" id="useview" style="width:100%;padding:7px">Use map view</button></div>
+      </div>
+    </section>
+    <section>
+      <h2>When</h2>
+      <div class="row">
+        <div><label for="start">From</label><input id="start" type="date"></div>
+        <div><label for="end">To</label><input id="end" type="date"></div>
+      </div>
+      <div class="chips" id="quick">
+        <span class="chip" data-days="7">7 d</span><span class="chip" data-days="30">30 d</span>
+        <span class="chip" data-days="90">90 d</span><span class="chip" data-days="365">1 y</span>
+        <span class="chip" data-days="0">All time</span>
+      </div>
+    </section>
+    <section>
+      <h2>Sources</h2>
+      <div id="sources"></div>
+      <div class="row">
+        <div><label for="cloud">Max cloud %</label><input id="cloud" type="number" value="60" min="0" max="100"></div>
+        <div><label for="sort">Sort</label>
+          <select id="sort"><option value="best">Best</option><option value="resolution">Resolution</option><option value="date">Newest</option><option value="cloud">Least cloud</option></select>
+        </div>
+      </div>
+      <button class="primary" id="go">SEARCH</button>
+      <div id="status" style="margin-top:8px"></div>
+    </section>
+    <div id="errors" class="errs"></div>
+    <div id="results"></div>
+  </aside>
+  <main style="position:relative">
+    <div id="map"></div>
+    <div id="opacity-box"><div class="t" id="layer-title"></div><input id="opacity" type="range" min="0" max="1" step="0.05" value="1"></div>
+  </main>
+</div>
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const COLORS = { wayback:"#8ab4ff", maxar:"#f5b942", umbra:"#c792ea", capella:"#ff8a65", naip:"#9ccc65", "sentinel-2":"#4fd1c5", "sentinel-1":"#90a4ae", landsat:"#ffd54f" };
+
+// ---------------------------------------------------------------- map
+const map = L.map("map", { zoomControl: true, worldCopyJump: true }).setView([20, 0], 3);
+const esri = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+  { maxZoom: 21, maxNativeZoom: 19, attribution: "Esri, Maxar/Vantor, Earthstar Geographics" }).addTo(map);
+const osm = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "&copy; OpenStreetMap" });
+const labels = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+  { maxZoom: 21, maxNativeZoom: 19, pane: "overlayPane", zIndex: 650 });
+L.control.layers({ "Esri imagery (latest)": esri, "OpenStreetMap": osm }, { "Labels": labels }, { position: "topright" }).addTo(map);
+L.control.scale({ imperial: false }).addTo(map);
+
+let aoiLayer = null, aoiBbox = null, overlay = null, footprint = null, shipsLayer = L.layerGroup().addTo(map);
+
+function setAoiFromPoint(lat, lon) {
+  const r = parseFloat($("#radius").value) || 3;
+  const dlat = r / 110.574, dlon = r / (111.32 * Math.max(Math.cos(lat * Math.PI / 180), 1e-6));
+  setAoi([lon - dlon, lat - dlat, lon + dlon, lat + dlat]);
+  $("#where").value = `${lat.toFixed(5)},${lon.toFixed(5)}`;
+}
+function setAoi(b, fit = false) {
+  aoiBbox = b;
+  if (aoiLayer) aoiLayer.remove();
+  aoiLayer = L.rectangle([[b[1], b[0]], [b[3], b[2]]], { color: "#f5b942", weight: 2, fill: false, dashArray: "6 4" }).addTo(map);
+  if (fit) map.fitBounds(aoiLayer.getBounds(), { padding: [40, 40] });
+}
+map.on("click", (e) => setAoiFromPoint(e.latlng.lat, e.latlng.lng));
+$("#radius").addEventListener("change", () => { const m = $("#where").value.match(/^\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*$/); if (m) setAoiFromPoint(+m[1], +m[2]); });
+$("#useview").onclick = () => { const b = map.getBounds(); setAoi([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]); $("#where").value = "(map view)"; };
+
+async function resolveWhere() {
+  const w = $("#where").value.trim();
+  if (!w) throw new Error("Pick a place: type one or click the map");
+  if (w === "(map view)" && aoiBbox) return;
+  const m = w.match(/^\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*$/);
+  if (m) { setAoiFromPoint(+m[1], +m[2]); return; }
+  const r = await fetch(`/api/geocode?q=${encodeURIComponent(w)}&radius_km=${$("#radius").value}`);
+  if (!r.ok) throw new Error((await r.json()).detail || "geocode failed");
+  const g = await r.json();
+  setAoi(g.bbox, true);
+}
+
+// ---------------------------------------------------------------- dates & sources
+const iso = (d) => d.toISOString().slice(0, 10);
+function setDays(days) {
+  const end = new Date();
+  $("#end").value = iso(end);
+  $("#start").value = days ? iso(new Date(end - days * 864e5)) : "2014-01-01";
+}
+setDays(0);
+$("#quick").onclick = (e) => { if (e.target.dataset.days !== undefined) setDays(+e.target.dataset.days); };
+
+fetch("/api/sources").then((r) => r.json()).then((list) => {
+  $("#sources").innerHTML = list.map((s) => `
+    <label class="src" title="${esc(s.coverage)} — ${esc(s.revisit)} — ${esc(s.license)}">
+      <input type="checkbox" value="${esc(s.key)}" checked>
+      <span><span class="badge" style="background:${COLORS[s.key] || "#555"};color:#111">${esc(s.key)}</span>
+      <small>${esc(s.coverage)}</small></span>
+      <span class="res">${esc(s.resolution.split(" (")[0])}</span>
+    </label>`).join("");
+});
+
+// ---------------------------------------------------------------- search
+const status = (msg, err = false) => { $("#status").textContent = msg; $("#status").className = err ? "err" : ""; };
+let scenes = [];
+
+$("#go").onclick = async () => {
+  $("#go").disabled = true; $("#errors").textContent = "";
+  try {
+    await resolveWhere();
+    const srcs = [...document.querySelectorAll("#sources input:checked")].map((i) => i.value);
+    const q = new URLSearchParams({ bbox: aoiBbox.join(","), start: $("#start").value, end: $("#end").value,
+      sources: srcs.join(","), max_cloud: $("#cloud").value, sort: $("#sort").value, limit: 40 });
+    status("Searching " + srcs.length + " sources… (first search of Maxar/Umbra/Capella builds a local index, ~1 min)");
+    const r = await fetch("/api/search?" + q);
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || r.statusText);
+    scenes = d.scenes;
+    const counts = Object.entries(d.counts).filter(([, n]) => n).map(([k, n]) => `${k} ${n}`).join(" · ");
+    status(`${scenes.length} scenes${counts ? " — " + counts : ""}`);
+    $("#errors").textContent = Object.entries(d.errors).map(([k, v]) => `${k}: ${v}`).join("\n");
+    renderResults();
+  } catch (e) { status(e.message, true); }
+  finally { $("#go").disabled = false; }
+};
+
+function renderResults() {
+  $("#results").innerHTML = scenes.map((s, i) => {
+    const cloud = s.cloud_cover == null ? "" : ` · ☁ ${Math.round(s.cloud_cover)}%`;
+    const cov = s.extra.coverage < 0.999 ? ` · covers ${Math.round(s.extra.coverage * 100)}%` : "";
+    const ev = s.extra.event ? ` · ${s.extra.event}` : s.extra.task ? ` · ${s.extra.task}` : s.extra.provider ? ` · ${s.extra.provider}` : "";
+    const canShips = s.source === "sentinel-2" || s.sensor === "sar";
+    const thumb = s.thumbnail && /^https:/.test(s.thumbnail) && !/\.tif/.test(s.thumbnail) ? `style="background-image:url('${esc(s.thumbnail)}')"` : "";
+    return `<div class="card" id="card-${i}">
+      <div class="thumb" ${thumb}>${thumb ? "" : esc(s.sensor === "sar" ? "SAR" : "EO")}</div>
+      <div class="meta">
+        <div class="top"><span class="badge" style="background:${COLORS[s.source] || "#555"};color:#111">${esc(s.source)}</span>
+          <b>${esc(s.datetime.slice(0, 10))}</b><span class="gsd">${s.gsd < 1 ? Math.round(s.gsd * 100) + " cm" : s.gsd + " m"}</span></div>
+        <div class="line">${esc(s.platform)}${cloud}${cov}${esc(ev)}</div>
+        <div class="actions">
+          <button class="ghost" data-act="view" data-i="${i}">View</button>
+          ${s.spec ? `<button class="ghost" data-act="png" data-i="${i}">PNG</button><button class="ghost" data-act="tif" data-i="${i}">TIF</button>` : ""}
+          ${canShips ? `<button class="ghost" data-act="ships" data-i="${i}">Ships</button>` : ""}
+          ${s.item_url ? `<a class="ghost" style="text-decoration:none;padding:4px 8px;border:1px solid var(--line);border-radius:5px;font-size:11px;color:var(--muted)" href="${esc(s.item_url)}" target="_blank" rel="noopener">Source</a>` : ""}
+        </div>
+        <div class="shipsum" id="ships-${i}"></div>
+      </div></div>`;
+  }).join("");
+}
+
+$("#results").onclick = (e) => {
+  const b = e.target.closest("button[data-act]");
+  if (b) { const s = scenes[+b.dataset.i]; ({ view, png: (s, i) => download(s, i, "png"), tif: (s, i) => download(s, i, "tif"), ships })[b.dataset.act](s, +b.dataset.i); }
+  const li = e.target.closest("li[data-lat]");
+  if (li) map.setView([+li.dataset.lat, +li.dataset.lon], 16);
+};
+
+// ---------------------------------------------------------------- view a scene
+function nativeZoom(gsd, lat) { return Math.min(21, Math.max(8, Math.ceil(Math.log2(156543.03 * Math.cos(lat * Math.PI / 180) / gsd)))); }
+
+function view(s, i) {
+  document.querySelectorAll(".card.active").forEach((c) => c.classList.remove("active"));
+  $("#card-" + i).classList.add("active");
+  if (overlay) overlay.remove();
+  if (footprint) footprint.remove();
+  const lat = (aoiBbox[1] + aoiBbox[3]) / 2;
+  if (s.render.kind === "xyz") {
+    overlay = L.tileLayer(s.render.hrefs[0], { maxZoom: 22, maxNativeZoom: 19, attribution: esc(s.attribution) });
+  } else {
+    overlay = L.tileLayer(`/api/tiles/{z}/{x}/{y}.png?spec=${s.spec}`, {
+      maxZoom: 22, maxNativeZoom: nativeZoom(s.gsd, lat), minZoom: 3, attribution: esc(s.attribution),
+      bounds: [[s.bbox[1], s.bbox[0]], [s.bbox[3], s.bbox[2]]],
+    });
+  }
+  overlay.addTo(map);
+  overlay.setOpacity(+$("#opacity").value);
+  if (s.geometry) footprint = L.geoJSON(s.geometry, { style: { color: COLORS[s.source] || "#fff", weight: 1, fill: false } }).addTo(map);
+  $("#layer-title").textContent = `${s.source} ${s.datetime.slice(0, 16).replace("T", " ")}Z · ${s.platform}`;
+  $("#opacity-box").style.display = "block";
+  map.fitBounds([[aoiBbox[1], aoiBbox[0]], [aoiBbox[3], aoiBbox[2]]], { padding: [20, 20] });
+}
+$("#opacity").oninput = (e) => overlay && overlay.setOpacity(+e.target.value);
+
+// ---------------------------------------------------------------- downloads & ships
+async function post(path, s, extra = {}) {
+  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ scene: s, bbox: aoiBbox, ...extra }) });
+  if (!r.ok) { let m = r.statusText; try { m = (await r.json()).detail; } catch {} throw new Error(m); }
+  return r;
+}
+async function download(s, i, format) {
+  status(`Rendering ${format.toUpperCase()}…`);
+  try {
+    const blob = await (await post("/api/chip", s, { format })).blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = `${s.source}_${s.datetime.slice(0, 10)}.${format}`; a.click();
+    status("Downloaded.");
+  } catch (e) { status(e.message, true); }
+}
+async function ships(s, i) {
+  const box = $("#ships-" + i);
+  box.textContent = "Detecting vessels…";
+  try {
+    const gj = await (await post("/api/ships", s)).json();
+    shipsLayer.clearLayers();
+    const feats = gj.features;
+    feats.forEach((f) => {
+      const p = f.properties, [lon, lat] = f.geometry.coordinates;
+      const color = p.length_m >= 250 ? "#ff5a5a" : p.length_m >= 100 ? "#ffa000" : "#ffe000";
+      L.circleMarker([lat, lon], { radius: Math.max(4, Math.min(14, p.length_m / 25)), color, weight: 2, fill: false })
+        .bindPopup(`<b>${p.length_m} m</b> × ${p.width_m} m<br>${esc(p.size_class)}<br>axis ${p.heading_deg}° · contrast ${p.contrast}σ` +
+          (p.nearby_medium_vessels ? `<br>${p.nearby_medium_vessels} 100–220 m hulls within 15 km` : "") + `<br>${lat.toFixed(5)}, ${lon.toFixed(5)}`)
+        .addTo(shipsLayer);
+    });
+    const big = feats.filter((f) => f.properties.length_m >= 250).length;
+    const warn = (gj.properties.warnings || []).map((w) => `<div style="color:var(--danger)">${esc(w)}</div>`).join("");
+    box.innerHTML = `<b>${feats.length}</b> vessels, <b style="color:var(--danger)">${big}</b> ≥ 250 m${warn}<ol>` +
+      feats.slice(0, 40).map((f) => `<li data-lat="${f.geometry.coordinates[1]}" data-lon="${f.geometry.coordinates[0]}">${f.properties.length_m} m · ${f.properties.heading_deg}°</li>`).join("") + "</ol>";
+    if (!overlay) view(s, i);
+  } catch (e) { box.textContent = e.message; }
+}
+</script>
+</body>
+</html>
