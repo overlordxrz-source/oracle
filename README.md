@@ -62,7 +62,7 @@ oracle ships "5.5,95.5" -r 60 --start 2026-03-08 --end 2026-03-12 --min-length 2
 
 Each very large hull gets boxed in red. Oracle reports its length, width and axis, and
 counts the 100-220 m hulls within 15 km (a weak task-group hint). It also saves close-ups.
-A 120 x 120 km scan takes about 3 minutes on a home connection.
+A 120 x 120 km scan took about 3 minutes in testing.
 At 10 m a carrier, a VLCC tanker and a big container ship look alike, so **you** do the
 identification, using context: escorts, the wake, the route, the news. If it's cloudy,
 use `--sources sentinel-1` (radar).
