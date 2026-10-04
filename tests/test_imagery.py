@@ -88,6 +88,7 @@ def test_detects_elongated_hull_with_length_and_heading():
     d = dets[0]
     assert d.length_m == pytest.approx(330, abs=20)
     assert d.width_m < 40
+    assert d.wiggle_m < 1  # perfectly straight bar
     assert d.heading_deg == pytest.approx(90, abs=5)  # east-west axis
     assert not d.near_shore
 
@@ -102,8 +103,8 @@ def test_ignores_noise_and_marks_shore_contacts():
     assert len(dets) == 1 and dets[0].near_shore
 
 
-def _det(length, width, contrast, excess=None):
-    return Detection(0, 0, 0, 0, length, width, 0, length * width, contrast, False, excess=excess)
+def _det(length, width, contrast, excess=None, wiggle_m=3.0, fill=1.0):
+    return Detection(0, 0, 0, 0, length, width, 0, length * width * fill, contrast, False, excess=excess, wiggle_m=wiggle_m)
 
 
 def test_hull_filter_rules():
@@ -115,7 +116,11 @@ def test_hull_filter_rules():
     assert _hull_like(_det(150, 30, 20, cloud))  # flat but slender: grey warship / white boat
     assert _hull_like(_det(476, 55, 87, cloud))  # bright flat container ship
     assert not _hull_like(_det(280, 70, 9, {"blue": -0.07, "red": -0.09, "nir": 0.3}))  # mudflat
-    assert _hull_like(_det(200, 50, 20))  # SAR: no spectral info, shape only
+    assert _hull_like(_det(200, 50, 20))  # no spectral info: shape only
+    assert not _hull_like(_det(400, 90, 20, hull, wiggle_m=15))  # wandering cloud streak
+    assert not _hull_like(_det(320, 90, 20, hull, fill=0.6))  # ragged blob
+    assert _hull_like(_det(60, 20, 20, hull, wiggle_m=12))  # too few pixels to judge the spine
+    assert _hull_like(_det(200, 65, 45, hull, wiggle_m=7))  # bright: hull with a tug alongside
 
 
 def test_otsu_separates_land_and_water():

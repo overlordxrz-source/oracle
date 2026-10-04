@@ -21,7 +21,7 @@ $ oracle history "38.8977,-77.0365"              # every sub-metre capture of a 
   ...
 
 $ oracle ships "2.55,101.55" -r 15 --days 60     # Strait of Malacca, Sentinel-2
-  27 vessels >= 25 m, 5 >= 250 m
+  26 vessels >= 25 m, 5 >= 250 m
      476 m x 55 m  axis 129.4 deg   2.49947, 101.60337   87.3 sigma
      333 m x 73 m  axis 130.6 deg   2.55228, 101.54154   84.8 sigma
   -> annotated overview PNG, close-up contact sheet, GeoJSON
@@ -62,6 +62,7 @@ oracle ships "5.5,95.5" -r 60 --start 2026-03-08 --end 2026-03-12 --min-length 2
 
 Each very large hull gets boxed in red. Oracle reports its length, width and axis, and
 counts the 100-220 m hulls within 15 km (a weak task-group hint). It also saves close-ups.
+A 120 x 120 km scan takes about 3 minutes on a home connection.
 At 10 m a carrier, a VLCC tanker and a big container ship look alike, so **you** do the
 identification, using context: escorts, the wake, the route, the news. If it's cloudy,
 use `--sources sentinel-1` (radar).
@@ -148,10 +149,16 @@ oracle/
 - **Ship detection, optical:** water comes from ESA's scene classification. Ships are
   often mislabelled as cloud or land, so small "holes" in the water mask get put back,
   unless they're vegetated (islands). A blob is a candidate if it's k sigma brighter than
-  the local water in near-IR. Candidates then have to pass a hull test. Shape: long
-  objects must be thin. Spectrum: hulls are brighter than the water in red, while cloud
-  is spectrally flat and puffy. The thresholds were tuned on real hulls and look-alikes
-  in the Malacca Strait.
+  the local water in near-IR. Candidates then have to pass a hull test:
+  - Shape: long objects must be thin.
+  - Spine: a hull is a straight, solid bar (within 2-5 m of a line), while cloud streaks
+    wander 7-25 m.
+  - Spectrum: painted hulls are brighter than the water in red, while cloud is
+    spectrally flat and puffy.
+
+  The thresholds were measured on real hulls and look-alikes in the Malacca and
+  Singapore straits and the Andaman Sea. On those scenes, every hull of 150 m or more
+  was correctly kept, and 5 of 6 cloud and surf false alarms were rejected.
 - **Ship detection, radar:** the land/water split is an Otsu threshold on a coarse
   median of the backscatter. Detection is the same local-contrast test, in dB.
 
@@ -160,9 +167,9 @@ oracle/
 - Lengths come from the shape of the bright blob, so they include wake and turbulence,
   and are only good to about +/- 20 m on Sentinel-2. Radar side-lobes (the bright
   crosses) also inflate them.
-- There are false positives: thin cloud wisps that happen to be elongated, wind farms,
-  oil platforms, fish traps. And small, dark or wooden boats get missed. Always look at
-  the close-ups. Near-shore blobs (piers, moored ships) are dropped unless you pass
+- There are false positives: straight surf lines on reefs, the odd cloud streak, wind
+  farms, oil platforms. And small, dark or wooden boats get missed, as do some
+  odd-shaped blobs (a ship with a barge alongside). Always look at the close-ups. Near-shore blobs (piers, moored ships) are dropped unless you pass
   `--include-shore`.
 - The task-group hint means nothing in busy shipping lanes.
 - Wayback dates are *capture* dates from Esri's metadata, but a release is a mosaic, so

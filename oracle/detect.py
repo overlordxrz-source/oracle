@@ -51,6 +51,9 @@ class Detection:
     nearby_medium_vessels: int = 0
     # Sentinel-2 only: reflectance above the surrounding water in blue / red / NIR.
     excess: dict[str, float] | None = None
+    # RMS distance (m) of the blob's spine from a straight line. Hulls with or without
+    # wake stay within ~2-5 m (pixel staircasing); cloud streaks wander 7-25 m.
+    wiggle_m: float = 0.0
 
     @property
     def size_class(self) -> str:
@@ -236,9 +239,18 @@ def _hull_like(d: Detection) -> bool:
     is spectrally flat (NIR/blue excess ~0.9 vs 1.3-8 for most hulls), but so are grey
     warship paint and white boats, so a flat blob is only rejected when it is also faint
     and puffy rather than elongated, or very faint.
+    Spine: a hull (moving or anchored) is a straight, solid bar: measured spine wiggle
+    2-5 m and fill 0.92-1.04 on ~40 tankers/container ships; cloud streaks wander 7-25 m
+    or are ragged (fill 0.6-0.85). Only judged from 100 m up, where there are enough pixels.
     """
     if d.length_m >= 120 and d.width_m > 0.4 * d.length_m:
         return False
+    if d.length_m >= 100:
+        fill = d.area_m2 / (d.length_m * d.width_m)
+        # Every cloud measured stayed under ~36 sigma; brighter blobs that wander are
+        # usually a hull with a tug or barge alongside, so they are kept.
+        if d.contrast < 40 and (d.wiggle_m > 6 or fill < 0.85 or (d.wiggle_m > 4 and d.contrast < 20)):
+            return False
     e = d.excess
     if e and {"blue", "red", "nir"} <= e.keys():
         if e["red"] < 0 or (e["red"] < 0.02 and d.contrast < 15):
@@ -434,6 +446,7 @@ def _find_targets(
             vx, vy = 1.0, 0.0
         length = max(math.sqrt(12 * l1), res)
         width = max(math.sqrt(12 * l2), res)
+        wiggle = _wiggle_m(xs, ys, vx, vy, res) if npx >= 8 else 0.0
         heading = (math.degrees(math.atan2(vx, -vy)) + 180) % 180
         cr, cc = float(rows.mean()), float(cols.mean())
         x, y = grid.transform @ (cc + 0.5, cr + 0.5)
@@ -452,9 +465,24 @@ def _find_targets(
                 contrast=round(peak, 1),
                 near_shore=bool(near_land[sl][blob].any()),
                 excess=_ring_excess(aux, lab, i, sl, sea) if aux else None,
+                wiggle_m=round(wiggle, 1),
             )
         )
     return out
+
+
+def _wiggle_m(xs: np.ndarray, ys: np.ndarray, vx: float, vy: float, res: float) -> float:
+    """RMS sideways offset (m) of the blob's spine: per-slice centroid across the major axis."""
+    dx, dy = xs - xs.mean(), ys - ys.mean()
+    along = dx * vx + dy * vy
+    across = -dx * vy + dy * vx
+    bins = np.floor((along - along.min()) / (2 * res)).astype(int)
+    counts = np.bincount(bins)
+    sums = np.bincount(bins, weights=across)
+    centers = sums[counts > 0] / counts[counts > 0]
+    if centers.size < 3:
+        return 0.0
+    return float(np.sqrt(np.mean(centers**2)))
 
 
 def _ring_excess(aux: dict[str, np.ndarray], lab: np.ndarray, i: int, sl: tuple, sea: np.ndarray) -> dict[str, float]:
