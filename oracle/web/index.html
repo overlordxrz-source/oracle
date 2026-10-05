@@ -2,305 +2,377 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Oracle</title>
 <link rel="icon" href="/favicon.ico" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap">
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 <style>
 :root {
   color-scheme: dark;
-  --bg: #080b0f; --surface: #10161d; --surface-2: #161e27; --surface-3: #1d2733; --line: #26313d; --line-2: #33414f;
-  --text: #e3e9ef; --text-2: #a9b4bf; --muted: #74808c;
-  --accent: #f2b544; --accent-ink: #1b1305;
-  /* categorical (validated, dark surface): vessel / aircraft / vehicle; other = neutral */
+  /* chrome: monochrome */
+  --bg: #050505; --glass: rgba(12,12,13,.78); --glass-2: rgba(22,22,24,.86); --solid: #0d0d0e; --raise: #161618; --raise-2: #1e1e21;
+  --line: rgba(255,255,255,.07); --line-2: rgba(255,255,255,.13); --line-3: rgba(255,255,255,.22);
+  --text: #ededee; --text-2: #a3a3a8; --muted: #6b6b72; --faint: #45454b;
+  --hi: #ffffff;
+  /* data: validated categorical palette (dark surface); other = neutral */
   --c-vessel: #3987e5; --c-aircraft: #d95926; --c-vehicle: #199e70; --c-other: #8f8e86;
   /* status (fixed): critical / serious / warning / good */
   --s-critical: #d03b3b; --s-serious: #ec835a; --s-warning: #fab219; --s-good: #0ca30c;
-  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --sans: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --r: 8px;
+  /* change kinds (match oracle/change.py) */
+  --k-new_water: #3b82f6; --k-water_loss: #eab308; --k-burn: #dc2626; --k-vegetation_loss: #f97316;
+  --k-new_bright_surface: #f4f4f5; --k-surface_change: #a855f7; --k-radar_increase: #f4f4f5; --k-radar_decrease: #3b82f6;
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --r: 10px; --blur: saturate(140%) blur(18px);
 }
 * { box-sizing: border-box; }
-html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 13px/1.45 var(--sans); overflow: hidden; }
-button, input, select { font: inherit; color: inherit; }
-#app { display: grid; grid-template-columns: 56px 360px 1fr; grid-template-rows: 48px 1fr; height: 100%; }
-#app.collapsed { grid-template-columns: 56px 0 1fr; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 13px/1.5 var(--sans); overflow: hidden; -webkit-font-smoothing: antialiased; }
+button, input, select, textarea { font: inherit; color: inherit; }
+::selection { background: rgba(255,255,255,.18); }
+::-webkit-scrollbar { width: 8px; height: 8px; } ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.08); border-radius: 8px; } ::-webkit-scrollbar-track { background: transparent; }
 
-/* top bar */
-#top { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; padding: 0 12px; background: var(--surface); border-bottom: 1px solid var(--line); z-index: 5; }
-.logo { display: flex; align-items: center; gap: 8px; font: 700 14px/1 var(--mono); letter-spacing: .3em; color: var(--accent); white-space: nowrap; }
-.logo svg { width: 22px; height: 22px; }
-#q { flex: 0 1 420px; min-width: 120px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 999px; padding: 7px 14px; outline: none; }
-#q:focus { border-color: var(--accent); }
-.seg { display: flex; background: var(--surface-2); border: 1px solid var(--line); border-radius: 999px; padding: 2px; }
-.seg button { border: 0; background: none; padding: 4px 10px; border-radius: 999px; color: var(--text-2); cursor: pointer; font-size: 12px; }
-.seg button.on { background: var(--surface-3); color: var(--text); }
-.pills { margin-left: auto; display: flex; gap: 6px; }
-.pill { font: 12px var(--mono); color: var(--text-2); background: var(--surface-2); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; white-space: nowrap; }
-.pill b { color: var(--text); font-weight: 600; }
+#map { position: fixed; inset: 0; background: var(--bg); }
+.glass { background: var(--glass); border: 1px solid var(--line); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur); border-radius: var(--r); box-shadow: 0 10px 40px rgba(0,0,0,.45); }
+.mono { font-family: var(--mono); }
+.cap { font: 500 10px/1 var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--muted); }
 
-/* rail */
-#rail { background: var(--surface); border-right: 1px solid var(--line); display: flex; flex-direction: column; align-items: center; padding: 8px 0; gap: 4px; z-index: 4; }
-#rail button { width: 44px; height: 44px; border: 0; border-radius: 10px; background: none; color: var(--muted); cursor: pointer; display: grid; place-items: center; position: relative; }
-#rail button:hover { color: var(--text); background: var(--surface-2); }
-#rail button.on { color: var(--accent); background: var(--surface-3); }
-#rail button svg { width: 20px; height: 20px; }
-#rail button .tip { position: absolute; left: 52px; background: var(--surface-3); border: 1px solid var(--line-2); padding: 3px 8px; border-radius: 6px; font-size: 11px; white-space: nowrap; color: var(--text); opacity: 0; pointer-events: none; transition: opacity .12s; }
-#rail button:hover .tip { opacity: 1; }
-#rail .sp { flex: 1; }
+/* ---------------------------------------------------------------- top */
+#brand { position: fixed; left: 16px; top: 14px; z-index: 10; display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 14px; }
+#brand .w { font: 600 12px/1 var(--mono); letter-spacing: .42em; color: var(--hi); }
+#brand .eye { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--hi); position: relative; }
+#brand .eye::after { content: ""; position: absolute; inset: 2px; border-radius: 50%; background: var(--hi); }
+#brand .stats { font: 11px var(--mono); color: var(--muted); padding-left: 10px; border-left: 1px solid var(--line); white-space: nowrap; }
+#brand .stats b { color: var(--text-2); font-weight: 500; }
 
-/* panel */
-#panel { background: var(--surface); border-right: 1px solid var(--line); overflow: hidden; display: flex; flex-direction: column; z-index: 3; }
-#app.collapsed #panel { border: 0; }
-.mode { display: none; flex-direction: column; height: 100%; min-height: 0; }
-.mode.on { display: flex; }
-.ph { padding: 14px 16px 10px; border-bottom: 1px solid var(--line); }
-.ph h2 { margin: 0; font: 600 15px/1.2 var(--sans); }
-.ph p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
-.pb { padding: 12px 16px; border-bottom: 1px solid var(--line); }
-.scroll { overflow-y: auto; flex: 1; min-height: 0; padding: 8px 10px 40px; }
-label.l { display: block; font-size: 11px; color: var(--muted); margin: 8px 0 4px; letter-spacing: .02em; }
-.in { width: 100%; background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; outline: none; }
-.in:focus { border-color: var(--accent); }
-.row { display: flex; gap: 8px; } .row > * { flex: 1; min-width: 0; }
-.btn { border: 1px solid var(--line-2); background: var(--surface-2); color: var(--text); border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 12px; white-space: nowrap; }
-.btn:hover { border-color: var(--accent); color: var(--accent); }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 700; }
-.btn.primary:hover { filter: brightness(1.08); color: var(--accent-ink); }
-.btn:disabled { opacity: .5; cursor: progress; }
-.btn.sm { padding: 3px 8px; font-size: 11px; }
-.btn.full { width: 100%; margin-top: 10px; padding: 8px; }
+#cmd { position: fixed; left: 50%; top: 14px; transform: translateX(-50%); z-index: 12; width: min(620px, calc(100vw - 32px)); }
+#cmd .bar { display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 8px 0 16px; border-radius: 999px; }
+#cmd .bar:focus-within { border-color: var(--line-3); }
+#cmd svg { width: 15px; height: 15px; flex: none; color: var(--muted); }
+#q { flex: 1; min-width: 0; height: 100%; background: none; border: 0; outline: none; font-size: 14px; color: var(--hi); }
+#q::placeholder { color: var(--muted); }
+.kbd { font: 500 10px/1 var(--mono); color: var(--muted); border: 1px solid var(--line-2); border-radius: 5px; padding: 4px 6px; white-space: nowrap; }
+#qhint { transition: opacity .15s; }
+#cmd .sugg { margin-top: 6px; padding: 6px; display: none; }
+#cmd.open .sugg { display: block; }
+.sugg .it { display: flex; gap: 10px; align-items: baseline; padding: 7px 10px; border-radius: 8px; cursor: pointer; color: var(--text-2); }
+.sugg .it:hover, .sugg .it.on { background: rgba(255,255,255,.06); color: var(--hi); }
+.sugg .it .cap { flex: none; width: 46px; }
+
+#layers { position: fixed; right: 16px; top: 14px; z-index: 10; display: flex; gap: 2px; padding: 4px; height: 40px; align-items: center; }
+.tg { border: 0; background: none; color: var(--muted); font: 500 10px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; padding: 8px 9px; border-radius: 7px; cursor: pointer; }
+.tg:hover { color: var(--text); } .tg.on { color: var(--hi); background: rgba(255,255,255,.07); }
+
+/* ---------------------------------------------------------------- dock + sheet */
+#dock { position: fixed; left: 16px; top: 66px; z-index: 10; display: flex; flex-direction: column; gap: 2px; padding: 5px; }
+#dock button { border: 0; background: none; color: var(--muted); font: 500 10px/1 var(--mono); letter-spacing: .16em; text-transform: uppercase; padding: 10px 10px; border-radius: 7px; cursor: pointer; text-align: left; display: flex; align-items: center; gap: 9px; }
+#dock button i { width: 5px; height: 5px; border-radius: 50%; background: currentColor; opacity: .0; }
+#dock button:hover { color: var(--text); }
+#dock button.on { color: var(--hi); background: rgba(255,255,255,.06); } #dock button.on i { opacity: 1; }
+#sheet { position: fixed; left: 122px; top: 66px; bottom: 16px; width: 392px; z-index: 9; display: flex; flex-direction: column; overflow: hidden; transition: transform .2s ease, opacity .2s; }
+#sheet.hide { transform: translateX(-12px); opacity: 0; pointer-events: none; }
+.mode { display: none; flex-direction: column; min-height: 0; height: 100%; } .mode.on { display: flex; }
+.hd { padding: 16px 18px 12px; border-bottom: 1px solid var(--line); }
+.hd h2 { margin: 0; font: 500 15px/1.2 var(--sans); color: var(--hi); letter-spacing: -.01em; }
+.hd p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
+.hd .x { float: right; }
+.sec { padding: 12px 18px; border-bottom: 1px solid var(--line); }
+.scroll { overflow-y: auto; flex: 1; min-height: 0; padding: 10px 12px 40px; }
+label.l { display: block; margin: 12px 0 6px; } .sec > label.l:first-child { margin-top: 0; }
+.in { width: 100%; height: 32px; background: rgba(255,255,255,.035); border: 1px solid var(--line); border-radius: 7px; padding: 0 10px; outline: none; color: var(--text); }
+.in:focus { border-color: var(--line-3); }
+select.in { appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%); background-position: calc(100% - 14px) 14px, calc(100% - 10px) 14px; background-size: 4px 4px; background-repeat: no-repeat; padding-right: 24px; }
+.row { display: flex; gap: 8px; align-items: flex-end; } .row > * { flex: 1; min-width: 0; }
+.btn { height: 32px; border: 1px solid var(--line-2); background: rgba(255,255,255,.03); color: var(--text); border-radius: 7px; padding: 0 12px; cursor: pointer; font-size: 12px; white-space: nowrap; }
+.btn:hover { border-color: var(--line-3); color: var(--hi); }
+.btn.pri { background: var(--hi); border-color: var(--hi); color: #000; font-weight: 600; }
+.btn.pri:hover { background: #d9d9db; }
+.btn:disabled { opacity: .45; cursor: progress; }
+.btn.sm { height: 26px; padding: 0 9px; font-size: 11px; }
+.btn.full { width: 100%; margin-top: 12px; }
+.seg { display: flex; border: 1px solid var(--line); border-radius: 8px; padding: 2px; background: rgba(255,255,255,.02); }
+.seg button { flex: 1; border: 0; background: none; height: 26px; border-radius: 6px; color: var(--muted); cursor: pointer; font: 500 11px var(--mono); white-space: nowrap; padding: 0 8px; }
+.seg button.on { background: rgba(255,255,255,.09); color: var(--hi); }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--surface-2); border-radius: 999px; padding: 3px 10px; cursor: pointer; font-size: 12px; color: var(--text-2); user-select: none; }
-.chip.on { color: var(--text); border-color: var(--line-2); background: var(--surface-3); }
-.chip.off { opacity: .45; }
-.dot { width: 9px; height: 9px; border-radius: 50%; flex: none; box-shadow: 0 0 0 2px var(--surface); }
-.status { font-size: 12px; color: var(--muted); margin-top: 8px; min-height: 18px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; cursor: pointer; font-size: 11px; color: var(--text-2); user-select: none; }
+.chip:hover { border-color: var(--line-2); color: var(--text); }
+.chip.off { opacity: .4; }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.status { font-size: 12px; color: var(--muted); margin-top: 10px; min-height: 18px; }
 .status.err { color: var(--s-serious); }
-.src { display: flex; align-items: center; gap: 8px; padding: 3px 0; cursor: pointer; }
-.src input { accent-color: var(--accent); }
-.src .k { font: 600 12px var(--mono); }
-.src .r { margin-left: auto; font: 12px var(--mono); color: var(--text-2); }
+.src { display: flex; align-items: center; gap: 10px; padding: 4px 0; cursor: pointer; color: var(--text-2); }
+.src input { accent-color: #fff; }
+.src .k { font: 500 11px var(--mono); color: var(--text); }
+.src .r { margin-left: auto; font: 11px var(--mono); color: var(--muted); }
 .src small { display: block; color: var(--muted); font-size: 11px; }
+details.more summary { cursor: pointer; color: var(--muted); font: 500 10px var(--mono); letter-spacing: .14em; text-transform: uppercase; list-style: none; margin-top: 12px; }
+details.more summary::before { content: "+ "; } details.more[open] summary::before { content: "– "; }
 
-/* cards */
-.card { border: 1px solid var(--line); background: var(--surface-2); border-radius: var(--r); padding: 9px; margin-bottom: 8px; cursor: pointer; }
-.card:hover { border-color: var(--line-2); }
-.card.sel { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
-.card .t { display: flex; align-items: baseline; gap: 8px; }
-.card .t b { font-weight: 600; }
-.card .t .r { margin-left: auto; font: 600 13px var(--mono); color: var(--text); }
-.card .m { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.card .acts { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 7px; }
-.thumbrow { display: grid; grid-template-columns: 56px 1fr; gap: 10px; }
-.thumb { width: 56px; height: 56px; border-radius: 6px; background: #05080b center/cover; display: grid; place-items: center; font: 600 11px var(--mono); color: var(--muted); }
-.tag { font: 600 10px/1 var(--mono); letter-spacing: .04em; text-transform: uppercase; padding: 3px 6px; border-radius: 4px; background: var(--surface-3); color: var(--text-2); border: 1px solid var(--line-2); }
-.sev { display: inline-flex; align-items: center; gap: 5px; font: 600 11px var(--mono); color: var(--text); }
-.sev i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
-.meter { height: 6px; background: var(--surface-3); border-radius: 3px; overflow: hidden; }
-.meter > i { display: block; height: 100%; background: var(--c-vessel); border-radius: 3px; }
-.kv { display: grid; grid-template-columns: 110px 1fr; gap: 3px 10px; font-size: 12px; }
-.kv dt { color: var(--muted); } .kv dd { margin: 0; font-family: var(--mono); color: var(--text); overflow-wrap: anywhere; }
-.empty { color: var(--muted); font-size: 12px; padding: 16px 6px; text-align: center; }
-.spark { display: block; width: 100%; height: 34px; margin-top: 6px; }
+/* items */
+.item { border-radius: 8px; padding: 10px; margin-bottom: 2px; cursor: pointer; border: 1px solid transparent; }
+.item:hover { background: rgba(255,255,255,.035); }
+.item.sel { border-color: var(--line-2); background: rgba(255,255,255,.05); }
+.item .t { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.item .t b { font-weight: 500; color: var(--hi); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.item .t .r { margin-left: auto; font: 500 12px var(--mono); color: var(--text); white-space: nowrap; }
+.item .m { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.item .acts { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 8px; }
+.thumbrow { display: grid; grid-template-columns: 48px 1fr; gap: 12px; }
+.thumb { width: 48px; height: 48px; border-radius: 6px; background: #0a0a0a center/cover; display: grid; place-items: center; font: 500 10px var(--mono); color: var(--muted); border: 1px solid var(--line); }
+.tag { font: 500 9.5px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; padding: 3px 6px; border-radius: 4px; color: var(--text-2); border: 1px solid var(--line-2); white-space: nowrap; }
+.sev { display: inline-flex; align-items: center; gap: 5px; font: 500 10px var(--mono); letter-spacing: .08em; color: var(--text); }
+.sev i { width: 7px; height: 7px; border-radius: 2px; display: inline-block; }
+.meter { height: 3px; background: rgba(255,255,255,.08); border-radius: 3px; overflow: hidden; }
+.meter > i { display: block; height: 100%; background: var(--hi); border-radius: 3px; }
+.kv { display: grid; grid-template-columns: 96px 1fr; gap: 5px 12px; font-size: 12px; margin: 0; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; font-family: var(--mono); font-size: 11.5px; color: var(--text); overflow-wrap: anywhere; }
+.empty { color: var(--muted); font-size: 12px; padding: 22px 8px; text-align: center; line-height: 1.6; }
+.spark { display: block; width: 100%; height: 28px; margin-top: 8px; }
+h4 { margin: 18px 0 8px; } h4.cap { display: block; }
+.nl { font: 11px var(--mono); color: var(--text-2); display: grid; grid-template-columns: auto 1fr auto; gap: 3px 10px; margin-top: 8px; }
+.nl span:nth-child(3n+1) { color: var(--muted); }
 
-/* map + overlays */
-#mapwrap { position: relative; min-width: 0; }
-#map { position: absolute; inset: 0; background: #05080b; }
-.maplibregl-ctrl-group { background: var(--surface) !important; border: 1px solid var(--line); }
+/* ask */
+.thread { display: flex; flex-direction: column; gap: 14px; }
+.qhead { font: 500 15px/1.45 var(--sans); color: var(--hi); letter-spacing: -.01em; }
+.meta { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.steps { border-left: 1px solid var(--line-2); margin-left: 4px; padding-left: 14px; display: flex; flex-direction: column; gap: 9px; }
+.st { position: relative; font-size: 12px; color: var(--text-2); }
+.st::before { content: ""; position: absolute; left: -18px; top: 6px; width: 7px; height: 7px; border-radius: 50%; background: var(--bg); border: 1px solid var(--line-3); }
+.st.ok::before { background: var(--hi); border-color: var(--hi); }
+.st.error::before { background: var(--s-critical); border-color: var(--s-critical); }
+.st.running::before { border-color: var(--hi); animation: pulse 1s ease-in-out infinite; }
+.st .tn { font: 500 11px var(--mono); color: var(--hi); }
+.st .ti { font: 11px var(--mono); color: var(--muted); }
+.st .ts { margin-top: 2px; color: var(--text-2); overflow-wrap: anywhere; }
+.st.thinking .ts, .st.note .ts { color: var(--muted); font-style: italic; }
+@keyframes pulse { 50% { opacity: .25; } }
+.answer { border-top: 1px solid var(--line); padding-top: 14px; }
+.ev { display: inline-flex; align-items: center; font: 500 10px/1 var(--mono); padding: 3px 5px; margin: 0 1px; border-radius: 4px; border: 1px solid var(--line-3); background: rgba(255,255,255,.06); color: var(--hi); cursor: pointer; vertical-align: 1px; }
+.ev:hover { background: var(--hi); color: #000; }
+.ev.bad { border-color: var(--s-critical); color: var(--s-serious); text-decoration: line-through; }
+.prov { display: flex; flex-wrap: wrap; gap: 6px 12px; font: 11px var(--mono); color: var(--muted); border-top: 1px solid var(--line); padding-top: 10px; }
+.prov b { color: var(--text); font-weight: 500; }
+.hist .item .m { white-space: normal; }
+.examples .it { display: block; color: var(--text-2); padding: 7px 10px; border-radius: 8px; cursor: pointer; font-size: 12px; }
+.examples .it:hover { background: rgba(255,255,255,.04); color: var(--hi); }
+
+/* markdown */
+.md { color: var(--text-2); font-size: 13px; line-height: 1.6; }
+.md h1, .md h2, .md h3 { color: var(--hi); font-weight: 500; letter-spacing: -.01em; }
+.md h1 { font-size: 16px; margin: 4px 0 8px; } .md h2 { font-size: 14px; margin: 16px 0 6px; } .md h3 { font-size: 13px; margin: 12px 0 4px; }
+.md p { margin: 6px 0; } .md ul { margin: 4px 0 10px; padding-left: 16px; } .md li { margin: 4px 0; } .md li::marker { color: var(--faint); }
+.md strong { color: var(--hi); font-weight: 600; } .md em { color: var(--muted); }
+.md code { font: 11.5px var(--mono); background: rgba(255,255,255,.06); padding: 1px 5px; border-radius: 4px; }
+
+/* map chrome */
+.maplibregl-ctrl-group { background: var(--glass) !important; border: 1px solid var(--line) !important; box-shadow: none !important; backdrop-filter: var(--blur); border-radius: 8px !important; }
 .maplibregl-ctrl-group button + button { border-top: 1px solid var(--line) !important; }
-.maplibregl-ctrl button .maplibregl-ctrl-icon { filter: invert(1) brightness(.85); }
-.maplibregl-ctrl-attrib { background: rgba(8,11,15,.75) !important; color: var(--text-2); }
-.maplibregl-ctrl-attrib a { color: var(--text-2); }
-.maplibregl-popup-content { background: var(--surface); color: var(--text); border: 1px solid var(--line-2); border-radius: 6px; padding: 6px 9px; font-size: 12px; }
+.maplibregl-ctrl button .maplibregl-ctrl-icon { filter: invert(1) brightness(.75); }
+.maplibregl-ctrl-attrib { background: rgba(5,5,5,.6) !important; color: var(--muted); font-size: 10px; }
+.maplibregl-ctrl-attrib a { color: var(--muted); }
+.maplibregl-ctrl-scale { background: rgba(5,5,5,.5); border-color: var(--line-3); color: var(--text-2); font: 10px var(--mono); }
+.maplibregl-popup-content { background: var(--glass-2); color: var(--text); border: 1px solid var(--line-2); border-radius: 7px; padding: 6px 9px; font: 11px var(--mono); backdrop-filter: var(--blur); }
 .maplibregl-popup-tip { display: none; }
-.float { position: absolute; background: rgba(16,22,29,.92); border: 1px solid var(--line); border-radius: var(--r); backdrop-filter: blur(6px); z-index: 2; }
-#legend { left: 12px; top: 12px; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
-#legend .li { display: flex; align-items: center; gap: 7px; color: var(--text-2); cursor: pointer; }
-#legend .li.off { opacity: .4; }
-#layers { right: 12px; top: 12px; padding: 6px; display: flex; flex-direction: column; gap: 4px; }
-#hud { right: 12px; bottom: 132px; padding: 8px 10px; min-width: 230px; display: none; }
-#hud .t { font-size: 11px; color: var(--text-2); margin-bottom: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 280px; }
-#hud input[type=range] { width: 100%; accent-color: var(--accent); }
-#timeline { left: 12px; right: 12px; bottom: 12px; height: 108px; display: none; padding: 8px 10px 6px; }
-#timeline .bar { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 11px; color: var(--text-2); }
+
+#legend { position: fixed; right: 62px; bottom: 34px; z-index: 8; padding: 9px 11px; display: none; flex-direction: column; gap: 5px; font-size: 11px; }
+#legend .li { display: flex; align-items: center; gap: 8px; color: var(--text-2); cursor: pointer; }
+#legend .li.off { opacity: .35; } #legend .n { margin-left: auto; padding-left: 14px; font: 11px var(--mono); color: var(--muted); }
+#hud { position: fixed; right: 62px; bottom: 180px; z-index: 8; padding: 10px 12px; width: 260px; display: none; }
+#hud .t { font: 11px var(--mono); color: var(--text-2); margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+input[type=range] { width: 100%; accent-color: #fff; height: 16px; }
+#timeline { position: fixed; left: 50%; transform: translateX(-50%); bottom: 16px; width: min(900px, calc(100vw - 440px)); z-index: 8; display: none; padding: 8px 12px 6px; }
+#timeline .bar { display: flex; align-items: center; gap: 10px; margin-bottom: 2px; }
 #timeline .bar .sp { flex: 1; }
-#tl { width: 100%; height: 72px; display: block; cursor: pointer; }
-#tip { position: absolute; pointer-events: none; z-index: 20; background: var(--surface-3); border: 1px solid var(--line-2); border-radius: 6px; padding: 5px 8px; font-size: 12px; display: none; white-space: nowrap; }
+#tl { width: 100%; height: 58px; display: block; cursor: pointer; }
+#tip { position: fixed; pointer-events: none; z-index: 40; background: var(--glass-2); border: 1px solid var(--line-2); border-radius: 6px; padding: 5px 8px; font: 11px var(--mono); display: none; white-space: nowrap; backdrop-filter: var(--blur); }
 
 /* inspector */
-#insp { position: absolute; top: 0; right: 0; bottom: 0; width: 390px; max-width: 100%; background: var(--surface); border-left: 1px solid var(--line); z-index: 6; transform: translateX(105%); transition: transform .18s ease; display: flex; flex-direction: column; }
+#insp { position: fixed; top: 66px; right: 16px; bottom: 16px; width: 380px; max-width: calc(100vw - 32px); z-index: 11; display: flex; flex-direction: column; transform: translateX(calc(100% + 24px)); transition: transform .2s ease; }
 #insp.open { transform: none; }
-#insp .ih { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
-#insp .ih h3 { margin: 0; font: 600 14px var(--sans); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#insp .ib { overflow-y: auto; padding: 12px 14px 40px; flex: 1; }
-.x { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 18px; line-height: 1; padding: 4px; }
-.x:hover { color: var(--text); }
-.bigchip { width: 100%; aspect-ratio: 1; border-radius: var(--r); background: #05080b center/cover; border: 1px solid var(--line); margin-bottom: 12px; }
-.sight { display: grid; grid-template-columns: 72px 1fr; gap: 10px; padding: 8px 0; border-top: 1px solid var(--line); }
-.sight img { width: 72px; height: 72px; border-radius: 6px; object-fit: cover; background: #05080b; border: 1px solid var(--line); }
-.sight .when { font: 600 12px var(--mono); }
+#insp .ih { display: flex; align-items: center; gap: 8px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+#insp .ih h3 { margin: 0; font: 500 14px var(--sans); color: var(--hi); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#insp .ib { overflow-y: auto; padding: 14px 16px 40px; flex: 1; }
+.x { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 18px; line-height: 1; padding: 2px 4px; }
+.x:hover { color: var(--hi); }
+.bigchip { width: 100%; aspect-ratio: 1; border-radius: 8px; background: #0a0a0a center/cover; border: 1px solid var(--line); margin-bottom: 14px; }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
+.pair figure { margin: 0; } .pair img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); background: #0a0a0a; image-rendering: pixelated; display: block; }
+.pair figcaption { margin-top: 5px; }
+.sight { display: grid; grid-template-columns: 64px 1fr; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
+.sight img { width: 64px; height: 64px; border-radius: 6px; object-fit: cover; background: #0a0a0a; border: 1px solid var(--line); }
+.sight .when { font: 500 11.5px var(--mono); color: var(--hi); }
 .sight .m { font-size: 11px; color: var(--muted); }
-h4 { margin: 16px 0 6px; font: 600 11px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
 
-/* brief */
-.md h1 { font-size: 17px; margin: 4px 0 6px; } .md h2 { font-size: 14px; margin: 16px 0 6px; color: var(--accent); }
-.md h3 { font-size: 13px; margin: 12px 0 4px; } .md p { margin: 6px 0; color: var(--text-2); }
-.md ul { margin: 4px 0; padding-left: 18px; } .md li { margin: 3px 0; color: var(--text-2); } .md strong { color: var(--text); }
-.md code { font: 12px var(--mono); background: var(--surface-3); padding: 1px 4px; border-radius: 3px; }
-.md em { color: var(--muted); }
-
-#toasts { position: fixed; right: 14px; bottom: 14px; z-index: 50; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
-.toast { background: var(--surface-3); border: 1px solid var(--line-2); border-radius: var(--r); padding: 8px 12px; font-size: 12px; max-width: 340px; box-shadow: 0 6px 24px rgba(0,0,0,.4); }
-.toast.err { border-color: var(--s-critical); }
-.spin { display: inline-block; width: 10px; height: 10px; border: 2px solid var(--line-2); border-top-color: var(--accent); border-radius: 50%; animation: sp 1s linear infinite; vertical-align: -1px; margin-right: 6px; }
+#toasts { position: fixed; left: 50%; transform: translateX(-50%); top: 66px; z-index: 50; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
+.toast { pointer-events: auto; background: var(--glass-2); border: 1px solid var(--line-2); border-radius: 999px; padding: 8px 16px; font-size: 12px; max-width: 520px; backdrop-filter: var(--blur); box-shadow: 0 8px 30px rgba(0,0,0,.5); }
+.toast.err { border-color: rgba(208,59,59,.7); }
+.spin { display: inline-block; width: 9px; height: 9px; border: 1.5px solid var(--line-3); border-top-color: var(--hi); border-radius: 50%; animation: sp .9s linear infinite; vertical-align: -1px; margin-right: 7px; }
 @keyframes sp { to { transform: rotate(360deg); } }
+.vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 
-@media (max-width: 860px) {
-  #app, #app.collapsed { grid-template-columns: 1fr; grid-template-rows: 48px 1fr 46vh 56px; }
-  #top { grid-row: 1; } #mapwrap { grid-row: 2; } #panel { grid-row: 3; border-right: 0; border-top: 1px solid var(--line); }
-  #app.collapsed #panel { display: none; } #app.collapsed { grid-template-rows: 48px 1fr 0 56px; }
-  #rail { grid-row: 4; flex-direction: row; justify-content: space-around; border-right: 0; border-top: 1px solid var(--line); padding: 0 4px; }
-  #rail .sp, #rail .tip { display: none; }
-  .pills, .seg, .logo span { display: none; }
-  #q { flex: 1; }
-  #insp { width: 100%; }
-  #timeline { height: 96px; } #hud { bottom: 120px; }
-  #legend { display: none; }
+@media (max-width: 1400px) and (min-width: 901px) {
+  #brand .stats { display: none; }
+  #cmd { left: 196px; right: 430px; transform: none; width: auto; }
+}
+@media (max-width: 900px) {
+  #brand .stats, #layers { display: none; }
+  #brand { padding: 0 12px; }
+  #cmd { left: auto; right: 16px; transform: none; width: calc(100vw - 132px); }
+  #dock { top: auto; bottom: 16px; left: 16px; right: 16px; flex-direction: row; overflow-x: auto; }
+  #dock button { flex: none; }
+  #sheet { left: 16px; right: 16px; width: auto; top: auto; bottom: 70px; height: 52vh; }
+  #insp { top: auto; height: 70vh; bottom: 16px; }
+  #timeline { bottom: 70px; width: calc(100vw - 32px); } #legend, #hud { display: none !important; }
 }
 </style>
 </head>
 <body>
-<div id="app">
-  <header id="top">
-    <div class="logo"><svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="10" fill="none" stroke="currentColor" stroke-width="2.5"/><circle cx="16" cy="16" r="3.5" fill="#4fd1c5"/></svg><span>ORACLE</span></div>
-    <input id="q" placeholder="Search a place or lat,lon — Enter" autocomplete="off" aria-label="Search place">
-    <div class="seg" id="days" role="group" aria-label="Time window">
-      <button data-d="7">7d</button><button data-d="30" class="on">30d</button><button data-d="90">90d</button><button data-d="365">1y</button><button data-d="0">All</button>
-    </div>
-    <div class="pills" id="pills"></div>
-  </header>
+<div id="map" aria-label="Map"></div>
 
-  <nav id="rail" aria-label="Modes">
-    <button data-mode="imagery" class="on" aria-label="Imagery"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 15l5-5 4 4 3-3 6 6"/><circle cx="16" cy="8" r="1.6"/></svg><span class="tip">Imagery</span></button>
-    <button data-mode="objects" aria-label="Objects"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M1 12h4M19 12h4"/></svg><span class="tip">Objects</span></button>
-    <button data-mode="tracks" aria-label="Tracks"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="5" cy="18" r="2"/><circle cx="19" cy="6" r="2"/><path d="M7 17c6-1 3-9 10-10" stroke-dasharray="3 2.5"/></svg><span class="tip">Tracks</span></button>
-    <button data-mode="sites" aria-label="Sites"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 21s7-6.2 7-11.5A7 7 0 0 0 5 9.5C5 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg><span class="tip">Sites & sweeps</span></button>
-    <button data-mode="brief" aria-label="Brief"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 3h9l4 4v14H6z"/><path d="M9 11h7M9 15h7M9 7h3"/></svg><span class="tip">Brief & events</span></button>
-    <div class="sp"></div>
-    <button id="collapse" aria-label="Toggle panel"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg><span class="tip">Toggle panel</span></button>
-  </nav>
+<div id="brand" class="glass"><span class="eye"></span><span class="w">ORACLE</span><span class="stats" id="stats"></span></div>
 
-  <aside id="panel">
-    <!-- IMAGERY -->
-    <section class="mode on" data-mode="imagery">
-      <div class="ph"><h2>Imagery</h2><p>Every free archive, ranked. Click the map to set the area.</p></div>
-      <div class="pb">
-        <div class="row">
-          <div><label class="l" for="radius">Radius km</label><input id="radius" class="in" type="number" value="3" min="0.2" max="60" step="0.5"></div>
-          <div><label class="l">&nbsp;</label><button class="btn" id="useview" style="width:100%;padding:7px">Use map view</button></div>
-        </div>
-        <label class="l">Sources</label>
-        <div id="sources"></div>
-        <div class="row">
-          <div><label class="l" for="cloud">Max cloud %</label><input id="cloud" class="in" type="number" value="60" min="0" max="100"></div>
-          <div><label class="l" for="sort">Sort</label><select id="sort" class="in"><option value="best">Best</option><option value="resolution">Resolution</option><option value="date">Newest</option><option value="cloud">Least cloud</option></select></div>
-        </div>
-        <button class="btn primary full" id="go">Search imagery</button>
-        <div class="status" id="istatus"></div>
-      </div>
-      <div class="scroll" id="results"><div class="empty">Pick an area and search.</div></div>
-    </section>
-
-    <!-- OBJECTS -->
-    <section class="mode" data-mode="objects">
-      <div class="ph"><h2>Objects</h2><p>Everything the detectors found, in the current map view.</p></div>
-      <div class="pb">
-        <div class="chips" id="classchips"></div>
-        <label class="l" for="minconf">Min detector confidence <span id="minconfv">0.30</span></label>
-        <input id="minconf" type="range" min="0" max="1" step="0.05" value="0.3" style="width:100%;accent-color:var(--accent)">
-        <div class="status" id="ostatus"></div>
-      </div>
-      <div class="scroll" id="objlist"></div>
-    </section>
-
-    <!-- TRACKS -->
-    <section class="mode" data-mode="tracks">
-      <div class="ph"><h2>Tracks</h2><p>Same object across dates, with the probability of each link.</p></div>
-      <div class="pb">
-        <div class="row">
-          <div><label class="l" for="minobs">Min sightings</label><select id="minobs" class="in"><option>2</option><option selected>3</option><option>4</option><option>5</option></select></div>
-          <div><label class="l" for="tstatus">Status</label><select id="tstatus" class="in"><option value="">Any</option><option value="active">Active</option><option value="departed">Departed</option><option value="lost">Lost</option></select></div>
-        </div>
-        <div class="status" id="tstat"></div>
-      </div>
-      <div class="scroll" id="tracklist"></div>
-    </section>
-
-    <!-- SITES -->
-    <section class="mode" data-mode="sites">
-      <div class="ph"><h2>Sites & sweeps</h2><p>Places Oracle watches. A sweep detects, tracks and raises events.</p></div>
-      <div class="pb">
-        <div class="chips">
-          <span class="chip" data-preset="chokepoints">+ Chokepoints</span>
-          <span class="chip" data-preset="naval-bases">+ Naval bases</span>
-          <span class="chip" data-preset="airbases-us">+ US airbases</span>
-        </div>
-        <div class="row" style="margin-top:8px">
-          <input id="sitename" class="in" placeholder="New site from map view…">
-          <select id="sitekind" class="in" style="flex:0 0 110px"><option value="maritime">maritime</option><option value="naval">naval</option><option value="airbase">airbase</option><option value="ground">ground</option></select>
-        </div>
-        <div class="row" style="margin-top:8px">
-          <button class="btn" id="addsite">Add site</button>
-          <button class="btn primary" id="sweepall">Sweep all sites</button>
-        </div>
-        <div class="status" id="sstatus"></div>
-      </div>
-      <div class="scroll" id="sitelist"></div>
-    </section>
-
-    <!-- BRIEF -->
-    <section class="mode" data-mode="brief">
-      <div class="ph"><h2>Brief & events</h2><p>Ranked changes; written up by Claude when configured.</p></div>
-      <div class="pb">
-        <div class="row">
-          <select id="engine" class="in"><option value="auto">Claude if available</option><option value="on">Claude only</option><option value="off">Built-in report</option></select>
-          <button class="btn primary" id="mkbrief" style="flex:0 0 auto">Generate brief</button>
-        </div>
-        <div class="status" id="bstatus"></div>
-      </div>
-      <div class="scroll">
-        <div id="briefout" class="md"></div>
-        <h4>Events</h4>
-        <div id="eventlist"></div>
-      </div>
-    </section>
-  </aside>
-
-  <main id="mapwrap">
-    <div id="map"></div>
-    <div id="legend" class="float" aria-label="Legend"></div>
-    <div id="layers" class="float">
-      <span class="chip on" data-layer="objects">Objects</span>
-      <span class="chip on" data-layer="tracks">Tracks</span>
-      <span class="chip on" data-layer="sites">Sites</span>
-      <span class="chip" data-layer="labels">Labels</span>
-    </div>
-    <div id="hud" class="float">
-      <div class="t" id="hudt"></div>
-      <input id="opacity" type="range" min="0" max="1" step="0.05" value="1" aria-label="Overlay opacity">
-      <div class="row" style="margin-top:6px"><button class="btn sm" id="blink">Blink vs previous (B)</button><button class="btn sm" id="hideov">Hide</button></div>
-    </div>
-    <div id="timeline" class="float">
-      <div class="bar"><button class="btn sm" id="play">▶ Play</button><span id="tlinfo"></span><span class="sp"></span><span>← → step · B blink · Esc close</span></div>
-      <svg id="tl" role="img" aria-label="Imagery timeline"></svg>
-    </div>
-    <aside id="insp" aria-label="Inspector"><div class="ih"><h3 id="ititle"></h3><button class="x" id="iclose" aria-label="Close">×</button></div><div class="ib" id="ibody"></div></aside>
-  </main>
+<div id="cmd">
+  <div class="bar glass">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+    <input id="q" placeholder="Ask Oracle, or go to a place / lat,lon" autocomplete="off" spellcheck="false" aria-label="Ask Oracle or search a place">
+    <span class="kbd" id="qhint">⌘K</span>
+  </div>
+  <div class="sugg glass" id="sugg"></div>
 </div>
+
+<div id="layers" class="glass" role="group" aria-label="Layers">
+  <button class="tg on" data-layer="objects">Objects</button>
+  <button class="tg on" data-layer="tracks">Tracks</button>
+  <button class="tg on" data-layer="sites">Sites</button>
+  <button class="tg on" data-layer="evidence">Evidence</button>
+  <button class="tg" data-layer="labels">Labels</button>
+  <button class="tg" data-layer="dim" title="Dim the basemap">Dim</button>
+</div>
+
+<nav id="dock" class="glass" aria-label="Views">
+  <button data-mode="ask" class="on"><i></i>Ask</button>
+  <button data-mode="imagery"><i></i>Imagery</button>
+  <button data-mode="change"><i></i>Change</button>
+  <button data-mode="objects"><i></i>Objects</button>
+  <button data-mode="tracks"><i></i>Tracks</button>
+  <button data-mode="sites"><i></i>Sites</button>
+  <button data-mode="events"><i></i>Events</button>
+</nav>
+
+<aside id="sheet" class="glass">
+  <!-- ASK -->
+  <section class="mode on" data-mode="ask">
+    <div class="hd"><button class="x" data-close aria-label="Hide panel">×</button><h2>Ask</h2><p>Oracle investigates with its own tools and cites every claim.</p></div>
+    <div class="scroll" id="askbody"></div>
+    <div class="sec" style="border-top:1px solid var(--line);border-bottom:0">
+      <div class="row">
+        <div><span class="cap">Engine</span><div class="seg" id="engine" style="margin-top:6px"><button data-v="auto" class="on">Auto</button><button data-v="on">Claude</button><button data-v="off">Offline</button></div></div>
+        <div style="flex:0 0 110px"><span class="cap">Effort</span><select id="effort" class="in" style="margin-top:6px;height:30px"><option>medium</option><option selected>high</option><option>xhigh</option><option>max</option></select></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- IMAGERY -->
+  <section class="mode" data-mode="imagery">
+    <div class="hd"><button class="x" data-close aria-label="Hide panel">×</button><h2>Imagery</h2><p>Every free archive for the selected area. Click the map to select.</p></div>
+    <div class="sec">
+      <div class="row">
+        <div><label class="l cap" for="radius">Radius km</label><input id="radius" class="in" type="number" value="3" min="0.2" max="60" step="0.5"></div>
+        <div><label class="l cap" for="sort">Sort</label><select id="sort" class="in"><option value="best">Best</option><option value="resolution">Resolution</option><option value="date">Newest</option><option value="cloud">Least cloud</option></select></div>
+      </div>
+      <label class="l cap">Window</label>
+      <div class="seg" id="days"><button data-d="7">7d</button><button data-d="30" class="on">30d</button><button data-d="90">90d</button><button data-d="365">1y</button><button data-d="0">All</button></div>
+      <details class="more"><summary>Sources & cloud</summary>
+        <div id="sources" style="margin-top:8px"></div>
+        <label class="l cap" for="cloud">Max cloud %</label><input id="cloud" class="in" type="number" value="60" min="0" max="100">
+      </details>
+      <div class="row"><button class="btn" id="useview">Use map view</button><button class="btn pri" id="go">Search</button></div>
+      <div class="status" id="istatus"></div>
+      <div id="nextlooks"></div>
+    </div>
+    <div class="scroll" id="results"><div class="empty">Select an area on the map, then search.</div></div>
+  </section>
+
+  <!-- CHANGE -->
+  <section class="mode" data-mode="change">
+    <div class="hd"><button class="x" data-close aria-label="Hide panel">×</button><h2>Change</h2><p>What physically changed, against a multi-image baseline.</p></div>
+    <div class="sec">
+      <label class="l cap">Sensor</label>
+      <div class="seg" id="csrc"><button data-v="sentinel-2" class="on">Optical · S2</button><button data-v="sentinel-1">Radar · S1</button></div>
+      <label class="l cap">Baseline</label>
+      <div class="seg" id="cbase"><button data-v="recent" class="on">Recent weeks</button><button data-v="anniversary">Same season last year</button></div>
+      <div class="row"><div><label class="l cap" for="cafter">Image on / before</label><input id="cafter" class="in" type="date"></div><div><label class="l cap" for="crad">Radius km</label><input id="crad" class="in" type="number" value="3" min="0.5" max="20" step="0.5"></div></div>
+      <button class="btn pri full" id="crun">Detect change in selected area</button>
+      <div class="status" id="cstatus"></div>
+      <div id="cctl" style="display:none;margin-top:10px"><span class="cap">Overlay opacity</span><input id="copac" type="range" min="0" max="1" step="0.05" value="0.85"></div>
+    </div>
+    <div class="scroll" id="clist"><div class="empty">Select an area (click the map or use the command bar), then run.</div></div>
+  </section>
+
+  <!-- OBJECTS -->
+  <section class="mode" data-mode="objects">
+    <div class="hd"><button class="x" data-close aria-label="Hide panel">×</button><h2>Objects</h2><p>Detections in the current map view.</p></div>
+    <div class="sec">
+      <div class="chips" id="classchips"></div>
+      <label class="l cap" for="minconf">Min confidence <span id="minconfv" style="color:var(--text)">0.30</span></label>
+      <input id="minconf" type="range" min="0" max="1" step="0.05" value="0.3">
+      <div class="status" id="ostatus"></div>
+    </div>
+    <div class="scroll" id="objlist"></div>
+  </section>
+
+  <!-- TRACKS -->
+  <section class="mode" data-mode="tracks">
+    <div class="hd"><button class="x" data-close aria-label="Hide panel">×</button><h2>Tracks</h2><p>The same object across dates, with the probability of each link.</p></div>
+    <div class="sec">
+      <div class="row">
+        <div><label class="l cap" for="minobs">Min sightings</label><select id="minobs" class="in"><option>2</option><option selected>3</option><option>4</option><option>5</option></select></div>
+        <div><label class="l cap" for="tstatus">Status</label><select id="tstatus" class="in"><option value="">Any</option><option value="active">Active</option><option value="departed">Departed</option><option value="lost">Lost</option></select></div>
+      </div>
+      <div class="status" id="tstat"></div>
+    </div>
+    <div class="scroll" id="tracklist"></div>
+  </section>
+
+  <!-- SITES -->
+  <section class="mode" data-mode="sites">
+    <div class="hd"><button class="x" data-close aria-label="Hide panel">×</button><h2>Sites</h2><p>Places Oracle watches. A sweep detects, tracks and raises events.</p></div>
+    <div class="sec">
+      <div class="chips"><span class="chip" data-preset="chokepoints">+ Chokepoints</span><span class="chip" data-preset="naval-bases">+ Naval bases</span><span class="chip" data-preset="airbases-us">+ US airbases</span></div>
+      <div class="row" style="margin-top:10px"><input id="sitename" class="in" placeholder="Name a site for the selected area"><select id="sitekind" class="in" style="flex:0 0 104px"><option>maritime</option><option>naval</option><option>airbase</option><option>ground</option></select></div>
+      <div class="row" style="margin-top:8px"><button class="btn" id="addsite">Add site</button><button class="btn pri" id="sweepall">Sweep all</button></div>
+      <div class="status" id="sstatus"></div>
+    </div>
+    <div class="scroll" id="sitelist"></div>
+  </section>
+
+  <!-- EVENTS -->
+  <section class="mode" data-mode="events">
+    <div class="hd"><button class="x" data-close aria-label="Hide panel">×</button><h2>Events</h2><p>Ranked changes across all sites, and a written brief.</p></div>
+    <div class="sec">
+      <div class="row"><div class="seg" id="bengine"><button data-v="auto" class="on">Auto</button><button data-v="on">Claude</button><button data-v="off">Built-in</button></div><button class="btn pri" id="mkbrief" style="flex:0 0 auto">Write brief</button></div>
+      <div class="status" id="bstatus"></div>
+    </div>
+    <div class="scroll"><div id="briefout" class="md"></div><h4 class="cap">Events</h4><div id="eventlist"></div></div>
+  </section>
+</aside>
+
+<div id="legend" class="glass" aria-label="Legend"></div>
+<div id="hud" class="glass">
+  <div class="t" id="hudt"></div>
+  <input id="opacity" type="range" min="0" max="1" step="0.05" value="1" aria-label="Overlay opacity">
+  <div class="row" style="margin-top:8px"><button class="btn sm" id="blink">Blink (B)</button><button class="btn sm" id="hideov">Hide</button></div>
+</div>
+<div id="timeline" class="glass">
+  <div class="bar"><button class="btn sm" id="play">Play</button><span class="cap" id="tlinfo"></span><span class="sp"></span><span class="cap">← → step · B blink</span></div>
+  <svg id="tl" role="img" aria-label="Imagery timeline"></svg>
+</div>
+<aside id="insp" class="glass" aria-label="Inspector"><div class="ih"><h3 id="ititle"></h3><button class="x" id="iclose" aria-label="Close">×</button></div><div class="ib" id="ibody"></div></aside>
 <div id="tip"></div>
-<div id="toasts"></div>
+<div id="toasts" aria-live="polite"></div>
 
 <script>
 "use strict";
@@ -309,35 +381,38 @@ const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 const FAM = { vessel: "vessel", aircraft: "aircraft", helicopter: "aircraft", vehicle: "vehicle", "large-vehicle": "vehicle" };
-const famColor = (cls) => css("--c-" + (FAM[cls] || "other"));
-const LEGEND = [["vessel", "Vessels"], ["aircraft", "Aircraft & helicopters"], ["vehicle", "Vehicles"], ["other", "Tanks & other"]];
-const fmtLen = (m) => (m == null ? "?" : m < 1 ? Math.round(m * 100) + " cm" : Math.round(m) + " m");
+const famOf = (cls) => FAM[cls] || "other";
+const famColor = (cls) => css("--c-" + famOf(cls));
+const LEGEND = [["vessel", "Vessels"], ["aircraft", "Aircraft"], ["vehicle", "Vehicles"], ["other", "Other"]];
+const fmtLen = (m) => (m == null || m === "null" ? "?" : +m < 1 ? Math.round(m * 100) + " cm" : Math.round(m) + " m");
 const fmtGsd = (g) => (g < 1 ? Math.round(g * 100) + " cm" : g + " m");
 const day = (t) => (t || "").slice(0, 10);
+const hm = (t) => (t || "").slice(0, 16).replace("T", " ");
 const pct = (p) => (p == null ? "–" : Math.round(p * 100) + "%");
+const kcol = (k) => css("--k-" + k) || "#fff";
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function api(path, opts = {}) {
   const r = await fetch(path, opts.body ? { method: "POST", headers: { "Content-Type": "application/json" }, ...opts, body: JSON.stringify(opts.body) } : opts);
   if (!r.ok) { let m = r.statusText; try { m = (await r.json()).detail || m; } catch {} throw new Error(m); }
-  const ct = r.headers.get("content-type") || "";
-  return ct.includes("json") ? r.json() : r;
+  return (r.headers.get("content-type") || "").includes("json") ? r.json() : r;
 }
-function toast(msg, err = false, ms = 5000) {
+function toast(msg, err = false, ms = 4500) {
   const t = document.createElement("div");
-  t.className = "toast" + (err ? " err" : "");
-  t.innerHTML = msg;
-  $("#toasts").append(t);
+  t.className = "toast" + (err ? " err" : ""); t.innerHTML = msg; $("#toasts").append(t);
   if (ms) setTimeout(() => t.remove(), ms);
   return t;
 }
 async function waitJob(jid, label) {
-  const t = toast(`<span class="spin"></span>${esc(label)}…`, false, 0);
-  for (;;) {
-    await new Promise((r) => setTimeout(r, 1500));
-    const j = await api("/api/jobs/" + jid);
-    if (j.status === "done") { t.remove(); return j.result; }
-    if (j.status === "error") { t.remove(); throw new Error(j.error); }
-  }
+  const t = label ? toast(`<span class="spin"></span>${esc(label)}`, false, 0) : null;
+  try {
+    for (;;) {
+      await sleep(1300);
+      const j = await api("/api/jobs/" + jid);
+      if (j.status === "done") return j.result;
+      if (j.status === "error") throw new Error(j.error);
+    }
+  } finally { t?.remove(); }
 }
 function sevInfo(s) {
   if (s >= 0.8) return ["--s-critical", "HIGH"];
@@ -346,15 +421,16 @@ function sevInfo(s) {
   return ["--muted", "LOW"];
 }
 const sevBadge = (s) => { const [c, l] = sevInfo(s); return `<span class="sev"><i style="background:var(${c})"></i>${l}</span>`; };
+function status(sel, html, err = false) { $(sel).innerHTML = html; $(sel).classList.toggle("err", err); }
 
 // ------------------------------------------------------------------ state
-const S = { days: 30, aoi: null, scenes: [], cur: -1, prev: -1, classes: new Set(["vessel", "aircraft", "vehicle", "other"]), minconf: 0.3, mode: "imagery", blink: null, play: null, objects: null };
+const S = { days: 30, aoi: null, scenes: [], cur: -1, prev: -1, classes: new Set(["vessel", "aircraft", "vehicle", "other"]), minconf: 0.3, mode: "ask",
+  blink: null, play: null, objects: null, inv: null, invPoll: null, engine: "auto", bengine: "auto", csrc: "sentinel-2", cbase: "recent", change: null };
 
 // ------------------------------------------------------------------ map
+const DIM = { "raster-brightness-max": 0.62, "raster-saturation": -0.45, "raster-contrast": 0.08 };
 const map = new maplibregl.Map({
-  container: "map",
-  hash: true,
-  attributionControl: { compact: true },
+  container: "map", hash: true, attributionControl: { compact: true }, maxZoom: 21, center: [40, 22], zoom: 2.3,
   style: {
     version: 8,
     glyphs: "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
@@ -362,188 +438,319 @@ const map = new maplibregl.Map({
       esri: { type: "raster", tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"], tileSize: 256, maxzoom: 19, attribution: "Esri, Maxar/Vantor, Earthstar Geographics" },
       ref: { type: "raster", tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}"], tileSize: 256, maxzoom: 19 },
     },
-    layers: [
-      { id: "bg", type: "background", paint: { "background-color": "#05080b" } },
-      { id: "esri", type: "raster", source: "esri" },
-    ],
+    layers: [{ id: "bg", type: "background", paint: { "background-color": "#050505" } }, { id: "esri", type: "raster", source: "esri", paint: DIM }],
   },
-  center: [30, 20], zoom: 2.2, maxZoom: 21,
 });
 map.addControl(new maplibregl.NavigationControl({ visualizePitch: false }), "bottom-right");
 map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-left");
-
 const FC = () => ({ type: "FeatureCollection", features: [] });
 const colorExpr = ["match", ["get", "cls"], "vessel", css("--c-vessel"), ["aircraft", "helicopter"], css("--c-aircraft"), ["vehicle", "large-vehicle"], css("--c-vehicle"), css("--c-other")];
+const kindExpr = ["match", ["get", "kind"], ...["new_water", "water_loss", "burn", "vegetation_loss", "new_bright_surface", "surface_change", "radar_increase", "radar_decrease"].flatMap((k) => [k, kcol(k)]), "#ffffff"];
 
 map.on("load", () => {
-  map.addLayer({ id: "ref", type: "raster", source: "ref", layout: { visibility: "none" } });
+  map.addLayer({ id: "ref", type: "raster", source: "ref", layout: { visibility: "none" }, paint: { "raster-opacity": 0.8 } });
   map.addSource("aoi", { type: "geojson", data: FC() });
-  map.addLayer({ id: "aoi", type: "line", source: "aoi", paint: { "line-color": css("--accent"), "line-width": 2, "line-dasharray": [3, 2] } });
+  map.addLayer({ id: "aoi", type: "line", source: "aoi", paint: { "line-color": "#ffffff", "line-width": 1.2, "line-dasharray": [2, 2], "line-opacity": 0.85 } });
   map.addSource("footprint", { type: "geojson", data: FC() });
-  map.addLayer({ id: "footprint", type: "line", source: "footprint", paint: { "line-color": "#ffffff", "line-width": 1, "line-opacity": 0.5 } });
+  map.addLayer({ id: "footprint", type: "line", source: "footprint", paint: { "line-color": "#ffffff", "line-width": 1, "line-opacity": 0.35 } });
   map.addSource("sites", { type: "geojson", data: FC() });
-  map.addLayer({ id: "sites-fill", type: "fill", source: "sites", paint: { "fill-color": css("--accent"), "fill-opacity": 0.04 } });
-  map.addLayer({ id: "sites-line", type: "line", source: "sites", paint: { "line-color": css("--accent"), "line-width": 1.2, "line-opacity": 0.8 } });
+  map.addLayer({ id: "sites-line", type: "line", source: "sites", paint: { "line-color": "#ffffff", "line-width": 1, "line-opacity": 0.35 } });
+  map.addLayer({ id: "sites-fill", type: "fill", source: "sites", paint: { "fill-color": "#ffffff", "fill-opacity": 0.015 } });
   map.addSource("site-pts", { type: "geojson", data: FC() });
-  map.addLayer({ id: "sites-label", type: "symbol", source: "site-pts", minzoom: 4, layout: { "text-field": ["get", "name"], "text-font": ["Open Sans Semibold"], "text-size": 11, "text-anchor": "top-left", "text-offset": [0.3, 0.3] }, paint: { "text-color": css("--accent"), "text-halo-color": "#05080b", "text-halo-width": 1.4 } });
-
+  map.addLayer({ id: "sites-label", type: "symbol", source: "site-pts", minzoom: 4, layout: { "text-field": ["get", "name"], "text-font": ["Open Sans Semibold"], "text-size": 10, "text-anchor": "top-left", "text-offset": [0.4, 0.4], "text-letter-spacing": 0.08 }, paint: { "text-color": "#d4d4d8", "text-halo-color": "#050505", "text-halo-width": 1.2 } });
+  map.addSource("change-regions", { type: "geojson", data: FC() });
+  map.addLayer({ id: "change-line", type: "line", source: "change-regions", paint: { "line-color": kindExpr, "line-width": 1.4 } });
+  map.addLayer({ id: "change-hit", type: "fill", source: "change-regions", paint: { "fill-color": kindExpr, "fill-opacity": 0.06 } });
   map.addSource("tracks", { type: "geojson", data: FC() });
   map.addLayer({ id: "tracks", type: "line", source: "tracks", layout: { "line-cap": "round", "line-join": "round" },
-    paint: { "line-color": colorExpr, "line-width": ["interpolate", ["linear"], ["zoom"], 8, 1.5, 14, 3], "line-opacity": ["interpolate", ["linear"], ["coalesce", ["get", "mean_link_prob"], 0.5], 0.3, 0.35, 0.95, 1] } });
-  map.addLayer({ id: "tracks-sel", type: "line", source: "tracks", filter: ["==", ["get", "id"], ""], paint: { "line-color": "#ffffff", "line-width": 4 } });
-
-  map.addSource("objects", { type: "geojson", data: FC(), cluster: true, clusterMaxZoom: 11, clusterRadius: 42 });
+    paint: { "line-color": colorExpr, "line-width": ["interpolate", ["linear"], ["zoom"], 8, 1.2, 14, 2.6], "line-opacity": ["interpolate", ["linear"], ["coalesce", ["get", "mean_link_prob"], 0.5], 0.3, 0.3, 0.95, 0.95] } });
+  map.addLayer({ id: "tracks-sel", type: "line", source: "tracks", filter: ["==", ["get", "id"], ""], paint: { "line-color": "#ffffff", "line-width": 3.5 } });
+  map.addSource("objects", { type: "geojson", data: FC(), cluster: true, clusterMaxZoom: 11, clusterRadius: 44 });
   map.addLayer({ id: "clusters", type: "circle", source: "objects", filter: ["has", "point_count"],
-    paint: { "circle-color": "rgba(16,22,29,.85)", "circle-stroke-color": css("--line-2"), "circle-stroke-width": 1.5,
-      "circle-radius": ["step", ["get", "point_count"], 13, 50, 17, 500, 22, 5000, 28] } });
+    paint: { "circle-color": "rgba(10,10,11,.82)", "circle-stroke-color": "rgba(255,255,255,.28)", "circle-stroke-width": 1, "circle-radius": ["step", ["get", "point_count"], 12, 50, 16, 500, 21, 5000, 27] } });
   map.addLayer({ id: "cluster-n", type: "symbol", source: "objects", filter: ["has", "point_count"],
-    layout: { "text-field": ["get", "point_count_abbreviated"], "text-font": ["Open Sans Semibold"], "text-size": 11 }, paint: { "text-color": "#e3e9ef" } });
-  // Hollow rings sized by object length, so the object itself stays visible underneath.
-  const ringR = ["interpolate", ["linear"], ["zoom"], 8, 3.5, 12, 5, 15, ["interpolate", ["linear"], ["coalesce", ["get", "length_m"], 20], 10, 7, 400, 16], 18, 22];
+    layout: { "text-field": ["get", "point_count_abbreviated"], "text-font": ["Open Sans Semibold"], "text-size": 10 }, paint: { "text-color": "#ededee" } });
+  const ringR = ["interpolate", ["linear"], ["zoom"], 8, 3, 12, 4.5, 15, ["interpolate", ["linear"], ["coalesce", ["get", "length_m"], 20], 10, 7, 400, 16], 18, 22];
   map.addLayer({ id: "objects-halo", type: "circle", source: "objects", filter: ["!", ["has", "point_count"]],
-    paint: { "circle-color": "rgba(0,0,0,0)", "circle-radius": ringR, "circle-stroke-color": "rgba(5,8,11,.85)", "circle-stroke-width": 4 } });
+    paint: { "circle-color": "rgba(0,0,0,0)", "circle-radius": ringR, "circle-stroke-color": "rgba(0,0,0,.7)", "circle-stroke-width": 3.5 } });
   map.addLayer({ id: "objects", type: "circle", source: "objects", filter: ["!", ["has", "point_count"]],
-    paint: { "circle-color": colorExpr, "circle-opacity": ["interpolate", ["linear"], ["zoom"], 10, 0.9, 13, 0.12], "circle-radius": ringR,
-      "circle-stroke-color": colorExpr, "circle-stroke-width": 2 } });
+    paint: { "circle-color": colorExpr, "circle-opacity": ["interpolate", ["linear"], ["zoom"], 10, 0.9, 13, 0.1], "circle-radius": ringR, "circle-stroke-color": colorExpr, "circle-stroke-width": 1.6 } });
   map.addLayer({ id: "objects-sel", type: "circle", source: "objects", filter: ["==", ["get", "oid"], ""],
-    paint: { "circle-color": "rgba(0,0,0,0)", "circle-stroke-color": "#ffffff", "circle-stroke-width": 2.5, "circle-radius": 16 } });
+    paint: { "circle-color": "rgba(0,0,0,0)", "circle-stroke-color": "#ffffff", "circle-stroke-width": 2, "circle-radius": 16 } });
+  map.addSource("evidence", { type: "geojson", data: FC() });
+  map.addLayer({ id: "evidence", type: "circle", source: "evidence", paint: { "circle-radius": 6, "circle-color": "rgba(0,0,0,0)", "circle-stroke-color": "#ffffff", "circle-stroke-width": 1.5 } });
+  map.addLayer({ id: "evidence-label", type: "symbol", source: "evidence", layout: { "text-field": ["get", "id"], "text-font": ["Open Sans Semibold"], "text-size": 10, "text-offset": [0, -1.4], "text-allow-overlap": false }, paint: { "text-color": "#ffffff", "text-halo-color": "#000", "text-halo-width": 1.2 } });
+  map.addLayer({ id: "evidence-sel", type: "circle", source: "evidence", filter: ["==", ["get", "id"], ""], paint: { "circle-radius": 11, "circle-color": "rgba(255,255,255,.12)", "circle-stroke-color": "#ffffff", "circle-stroke-width": 2 } });
 
-  for (const id of ["objects", "clusters", "tracks", "sites-fill"]) {
+  for (const id of ["objects", "clusters", "tracks", "sites-fill", "change-hit", "evidence"]) {
     map.on("mouseenter", id, () => (map.getCanvas().style.cursor = "pointer"));
     map.on("mouseleave", id, () => (map.getCanvas().style.cursor = ""));
   }
-  map.on("click", "clusters", (e) => {
-    const f = e.features[0];
-    map.getSource("objects").getClusterExpansionZoom(f.properties.cluster_id).then((z) => map.easeTo({ center: f.geometry.coordinates, zoom: z }));
-  });
-  map.on("click", "objects", (e) => { e.originalEvent._handled = true; inspectObject(e.features[0].properties.oid); });
-  map.on("click", "tracks", (e) => { if (e.originalEvent._handled) return; e.originalEvent._handled = true; inspectTrack(e.features[0].properties.id); });
-  map.on("click", (e) => {
-    if (e.originalEvent._handled) return;
-    if (S.mode === "imagery") setAoiFromPoint(e.lngLat.lat, e.lngLat.lng);
-  });
+  map.on("click", "clusters", (e) => { e.originalEvent._h = 1; const f = e.features[0]; map.getSource("objects").getClusterExpansionZoom(f.properties.cluster_id).then((z) => map.easeTo({ center: f.geometry.coordinates, zoom: z })); });
+  map.on("click", "evidence", (e) => { e.originalEvent._h = 1; showEvidence(e.features[0].properties.id); });
+  map.on("click", "objects", (e) => { if (e.originalEvent._h) return; e.originalEvent._h = 1; inspectObject(e.features[0].properties.oid); });
+  map.on("click", "change-hit", (e) => { if (e.originalEvent._h) return; e.originalEvent._h = 1; inspectRegion(e.features[0].id ?? e.features[0].properties.rid); });
+  map.on("click", "tracks", (e) => { if (e.originalEvent._h) return; e.originalEvent._h = 1; inspectTrack(e.features[0].properties.id); });
+  map.on("click", (e) => { if (e.originalEvent._h) return; if (["imagery", "change", "ask", "sites"].includes(S.mode)) setAoiFromPoint(e.lngLat.lat, e.lngLat.lng); });
   const hover = new maplibregl.Popup({ closeButton: false, closeOnClick: false, offset: 10 });
-  map.on("mousemove", "objects", (e) => {
-    const p = e.features[0].properties;
-    hover.setLngLat(e.lngLat).setHTML(`<b>${esc(p.cls)}</b> ${fmtLen(p.length_m === "null" ? null : +p.length_m)} · ${esc(day(p.time))} · ${esc(p.source)}`).addTo(map);
-  });
+  map.on("mousemove", "objects", (e) => { const p = e.features[0].properties; hover.setLngLat(e.lngLat).setHTML(`${esc(p.cls)} · ${fmtLen(p.length_m)} · ${esc(day(p.time))} · ${esc(p.source)}`).addTo(map); });
   map.on("mouseleave", "objects", () => hover.remove());
   map.on("moveend", debounce(refreshObjects, 350));
   refreshAll();
+  renderAsk();
 });
-
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 function viewBbox() { const b = map.getBounds(); return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].map((v) => v.toFixed(5)).join(","); }
 const boxGeom = (b) => ({ type: "Polygon", coordinates: [[[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]], [b[0], b[1]]]] });
 
-// ------------------------------------------------------------------ chrome: modes, days, layers, legend, pills
-$$("#rail button[data-mode]").forEach((b) => (b.onclick = () => setMode(b.dataset.mode)));
-$("#collapse").onclick = () => { $("#app").classList.toggle("collapsed"); setTimeout(() => map.resize(), 50); };
-function setMode(m) {
+// ------------------------------------------------------------------ chrome
+$$("#dock button").forEach((b) => (b.onclick = () => setMode(b.dataset.mode, true)));
+$$("[data-close]").forEach((b) => (b.onclick = () => { $("#sheet").classList.add("hide"); $$("#dock button").forEach((x) => x.classList.remove("on")); }));
+function setMode(m, toggle = false) {
+  if (toggle && S.mode === m && !$("#sheet").classList.contains("hide")) { $("#sheet").classList.add("hide"); $$("#dock button").forEach((x) => x.classList.remove("on")); return; }
   S.mode = m;
-  $("#app").classList.remove("collapsed");
-  $$("#rail button[data-mode]").forEach((b) => b.classList.toggle("on", b.dataset.mode === m));
+  $("#sheet").classList.remove("hide");
+  $$("#dock button").forEach((b) => b.classList.toggle("on", b.dataset.mode === m));
   $$(".mode").forEach((s) => s.classList.toggle("on", s.dataset.mode === m));
   $("#timeline").style.display = m === "imagery" && S.scenes.length ? "block" : "none";
   if (m === "tracks") loadTracks();
   if (m === "sites") loadSites();
-  if (m === "brief") loadEvents();
+  if (m === "events") loadEvents();
   if (m === "objects") renderObjectList();
-  setTimeout(() => map.resize(), 50);
+  if (m === "ask" && !S.inv) renderAsk();
 }
-$$("#days button").forEach((b) => (b.onclick = () => {
-  $$("#days button").forEach((x) => x.classList.toggle("on", x === b));
-  S.days = +b.dataset.d;
-  refreshAll();
-}));
-$$("#layers .chip").forEach((c) => (c.onclick = () => {
+function segInit(sel, key, cb) {
+  $$(sel + " button").forEach((b) => (b.onclick = () => { $$(sel + " button").forEach((x) => x.classList.toggle("on", x === b)); S[key] = b.dataset.v ?? +b.dataset.d; cb && cb(); }));
+}
+segInit("#engine", "engine"); segInit("#bengine", "bengine"); segInit("#csrc", "csrc"); segInit("#cbase", "cbase");
+segInit("#days", "days", () => refreshAll());
+$$("#layers .tg").forEach((c) => (c.onclick = () => {
   c.classList.toggle("on");
-  const vis = c.classList.contains("on") ? "visible" : "none";
-  const ids = { objects: ["objects", "objects-halo", "clusters", "cluster-n", "objects-sel"], tracks: ["tracks", "tracks-sel"], sites: ["sites-fill", "sites-line", "sites-label"], labels: ["ref"] }[c.dataset.layer];
+  const on = c.classList.contains("on"), vis = on ? "visible" : "none", L = c.dataset.layer;
+  if (L === "dim") { for (const [k, v] of Object.entries(DIM)) map.setPaintProperty("esri", k, on ? (k === "raster-brightness-max" ? 0.32 : v) : v); return; }
+  const ids = { objects: ["objects", "objects-halo", "clusters", "cluster-n", "objects-sel"], tracks: ["tracks", "tracks-sel"], sites: ["sites-fill", "sites-line", "sites-label"], labels: ["ref"], evidence: ["evidence", "evidence-label", "evidence-sel"] }[L];
   ids.forEach((id) => map.getLayer(id) && map.setLayoutProperty(id, "visibility", vis));
 }));
 function renderLegend(counts = {}) {
-  $("#legend").innerHTML = LEGEND.map(([k, label]) => `<div class="li ${S.classes.has(k) ? "" : "off"}" data-k="${k}"><span class="dot" style="background:var(--c-${k})"></span>${label}${counts[k] != null ? ` <span style="color:var(--muted);font-family:var(--mono)">${counts[k]}</span>` : ""}</div>`).join("");
-  $$("#legend .li").forEach((el) => (el.onclick = () => { S.classes.has(el.dataset.k) ? S.classes.delete(el.dataset.k) : S.classes.add(el.dataset.k); applyObjects(); }));
-  $("#classchips").innerHTML = LEGEND.map(([k, label]) => `<span class="chip ${S.classes.has(k) ? "on" : "off"}" data-k="${k}"><span class="dot" style="background:var(--c-${k})"></span>${label}${counts[k] != null ? " · " + counts[k] : ""}</span>`).join("");
-  $$("#classchips .chip").forEach((el) => (el.onclick = () => { S.classes.has(el.dataset.k) ? S.classes.delete(el.dataset.k) : S.classes.add(el.dataset.k); applyObjects(); }));
+  const any = Object.values(counts).some((n) => n > 0);
+  $("#legend").style.display = any ? "flex" : "none";
+  $("#legend").innerHTML = LEGEND.map(([k, label]) => `<div class="li ${S.classes.has(k) ? "" : "off"}" data-k="${k}"><span class="dot" style="background:var(--c-${k})"></span>${label}<span class="n">${counts[k] ?? 0}</span></div>`).join("");
+  $$("#legend .li").forEach((el) => (el.onclick = () => toggleClass(el.dataset.k)));
+  $("#classchips").innerHTML = LEGEND.map(([k, label]) => `<span class="chip ${S.classes.has(k) ? "" : "off"}" data-k="${k}"><span class="dot" style="background:var(--c-${k})"></span>${label} <span class="mono" style="color:var(--muted)">${counts[k] ?? 0}</span></span>`).join("");
+  $$("#classchips .chip").forEach((el) => (el.onclick = () => toggleClass(el.dataset.k)));
 }
+function toggleClass(k) { S.classes.has(k) ? S.classes.delete(k) : S.classes.add(k); applyObjects(); }
 async function loadStats() {
   try {
     const s = await api("/api/stats");
-    $("#pills").innerHTML = `<span class="pill"><b>${s.observations.toLocaleString()}</b> objects</span><span class="pill"><b>${s.tracks.toLocaleString()}</b> tracks</span><span class="pill"><b>${s.events.toLocaleString()}</b> events</span><span class="pill"><b>${s.sites}</b> sites</span>`;
+    $("#stats").innerHTML = `<b>${s.observations.toLocaleString()}</b> obj · <b>${s.tracks.toLocaleString()}</b> trk · <b>${s.events.toLocaleString()}</b> evt`;
   } catch {}
 }
-function refreshAll() { loadStats(); refreshObjects(); loadTrackLayer(); loadSiteLayer(); if (S.mode === "brief") loadEvents(); if (S.mode === "tracks") loadTracks(); }
+function refreshAll() { loadStats(); refreshObjects(); loadTrackLayer(); loadSiteLayer(); if (S.mode === "events") loadEvents(); if (S.mode === "tracks") loadTracks(); }
 
-// ------------------------------------------------------------------ search box
+// ------------------------------------------------------------------ command bar: ask or go
+const QWORDS = /^(what|where|when|why|how|which|who|is|are|was|were|did|does|do|has|have|any|show|find|count|compare|list|tell|give|track|monitor|check|explain|summari[sz]e|investigate|can)\b/i;
+const looksLikeQuestion = (v) => v.includes("?") || QWORDS.test(v) || v.split(/\s+/).length > 6;
+const COORD = /^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/;
+const EXAMPLES = [
+  "What changed at Palm Jebel Ali in the last month?",
+  "Are large ships waiting off Fujairah, and how many?",
+  "When will Sentinel-2 next image the Strait of Hormuz?",
+  "Any new construction at 25.0, 55.0?",
+];
+function updateHint() {
+  const v = $("#q").value.trim();
+  $("#qhint").textContent = !v ? "⌘K" : COORD.test(v) ? "↵ go" : looksLikeQuestion(v) ? "↵ ask" : "↵ go · ⇧↵ ask";
+  const sugg = $("#sugg");
+  if (document.activeElement === $("#q") && !v) {
+    sugg.innerHTML = EXAMPLES.map((x, i) => `<div class="it" data-i="${i}"><span class="cap">ask</span>${esc(x)}</div>`).join("");
+    $("#cmd").classList.add("open");
+  } else $("#cmd").classList.remove("open");
+}
+$("#q").addEventListener("input", updateHint);
+$("#q").addEventListener("focus", updateHint);
+$("#q").addEventListener("blur", () => setTimeout(() => $("#cmd").classList.remove("open"), 150));
+$("#sugg").addEventListener("mousedown", (e) => { const it = e.target.closest(".it"); if (!it) return; e.preventDefault(); $("#q").value = EXAMPLES[+it.dataset.i]; ask($("#q").value); });
 $("#q").addEventListener("keydown", async (e) => {
+  if (e.key === "Escape") { e.target.blur(); return; }
   if (e.key !== "Enter") return;
-  const v = e.target.value.trim();
-  if (!v) return;
-  const m = v.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
+  const v = e.target.value.trim(); if (!v) return;
+  const m = v.match(COORD);
+  if (m) { setAoiFromPoint(+m[1], +m[2], true); e.target.blur(); return; }
+  if (e.shiftKey || looksLikeQuestion(v)) { ask(v); e.target.blur(); return; }
   try {
-    if (m) setAoiFromPoint(+m[1], +m[2], true);
-    else {
-      const g = await api(`/api/geocode?q=${encodeURIComponent(v)}&radius_km=${$("#radius").value}`);
-      setAoi(g.bbox, true);
-      e.target.value = g.name.split(",").slice(0, 2).join(",");
-    }
+    const g = await api(`/api/geocode?q=${encodeURIComponent(v)}&radius_km=${$("#radius").value}`);
+    setAoi(g.bbox, true);
+    e.target.value = g.name.split(",").slice(0, 2).join(",");
+    e.target.blur();
   } catch (err) { toast(esc(err.message), true); }
+});
+document.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); $("#q").focus(); $("#q").select(); return; }
+  if (["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement.tagName)) return;
+  if (e.key === "/") { e.preventDefault(); $("#q").focus(); }
+  else if (e.key === "ArrowRight") step(1);
+  else if (e.key === "ArrowLeft") step(-1);
+  else if (e.key === "b" || e.key === "B") toggleBlink();
+  else if (e.key === "Escape") closeInspector();
 });
 function setAoiFromPoint(lat, lon, fly = false) {
   const r = parseFloat($("#radius").value) || 3;
   const dlat = r / 110.574, dlon = r / (111.32 * Math.max(Math.cos((lat * Math.PI) / 180), 1e-6));
   setAoi([lon - dlon, lat - dlat, lon + dlon, lat + dlat], fly);
-  $("#q").value = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
 }
 function setAoi(b, fly = false) {
   S.aoi = b.map(Number);
   map.getSource("aoi")?.setData({ type: "Feature", geometry: boxGeom(S.aoi) });
-  if (fly) map.fitBounds([[S.aoi[0], S.aoi[1]], [S.aoi[2], S.aoi[3]]], { padding: 60, duration: 900 });
+  if (fly) map.fitBounds([[S.aoi[0], S.aoi[1]], [S.aoi[2], S.aoi[3]]], { padding: 80, duration: 900 });
+  loadNextLooks();
 }
+const aoiCenter = () => S.aoi && [(S.aoi[1] + S.aoi[3]) / 2, (S.aoi[0] + S.aoi[2]) / 2];
 $("#useview").onclick = () => { const b = map.getBounds(); setAoi([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]); };
+
+// ------------------------------------------------------------------ ask: investigations
+async function ask(question) {
+  setMode("ask");
+  clearInterval(S.invPoll);
+  S.inv = { question, status: "starting", steps: [], evidence: {}, answer: "" };
+  renderAsk();
+  try {
+    const r = await api("/api/investigate", { body: { question, llm: S.engine, effort: $("#effort").value } });
+    S.invId = r.id;
+    pollInv();
+  } catch (e) { S.inv.status = "error"; S.inv.error = e.message; renderAsk(); }
+}
+function pollInv() {
+  clearInterval(S.invPoll);
+  const tick = async () => {
+    try {
+      const d = await api("/api/investigations/" + S.invId);
+      S.inv = d; renderAsk(); plotEvidence();
+      if (d.status !== "running") { clearInterval(S.invPoll); refreshAll(); }
+    } catch {}
+  };
+  tick(); S.invPoll = setInterval(tick, 1200);
+}
+function renderAsk() {
+  const el = $("#askbody");
+  const inv = S.inv;
+  if (!inv) {
+    el.innerHTML = `<div class="examples"><h4 class="cap" style="margin-top:4px">Try</h4>${EXAMPLES.map((x, i) => `<span class="it" data-ex="${i}">${esc(x)}</span>`).join("")}</div><h4 class="cap">Recent</h4><div class="hist" id="hist"><div class="empty">No investigations yet.</div></div>`;
+    $$("[data-ex]", el).forEach((x) => (x.onclick = () => { $("#q").value = EXAMPLES[+x.dataset.ex]; ask($("#q").value); }));
+    loadHistory();
+    return;
+  }
+  const running = inv.status === "running" || inv.status === "starting";
+  const steps = (inv.steps || []).map((s) => {
+    if (s.type === "tool") {
+      const args = Object.entries(s.input || {}).map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`).join(" ");
+      const ev = (s.evidence || []).slice(0, 8).map((id) => `<button class="ev" data-ev="${id}">${id}</button>`).join("") + ((s.evidence || []).length > 8 ? `<span class="ti"> +${s.evidence.length - 8}</span>` : "");
+      return `<div class="st ${s.status}"><span class="tn">${esc(s.tool)}</span> <span class="ti">${esc(args.slice(0, 90))}${s.ms != null ? ` · ${(s.ms / 1000).toFixed(1)}s` : ""}</span>${s.summary ? `<div class="ts">${esc(s.summary)}</div>` : ""}${ev ? `<div style="margin-top:4px">${ev}</div>` : ""}</div>`;
+    }
+    return `<div class="st ${s.type}"><div class="ts">${esc(s.summary)}</div></div>`;
+  }).join("");
+  const p = inv.provenance || {};
+  const kinds = Object.entries(p.cited_by_kind || {}).filter(([, n]) => n).map(([k, n]) => `${n} ${k}`).join(" · ");
+  el.innerHTML = `<div class="thread">
+    <div class="qhead">${esc(inv.question)}</div>
+    <div class="meta">${running ? `<span class="tag"><span class="spin"></span>investigating</span>` : `<span class="tag">${esc(inv.status)}</span>`}${inv.engine ? `<span class="tag">${esc(inv.engine)}</span>` : ""}<span class="cap">${Object.keys(inv.evidence || {}).length} evidence</span></div>
+    ${steps ? `<div class="steps">${steps}</div>` : ""}
+    ${inv.answer ? `<div class="answer md">${withPills(md(inv.answer), inv.evidence || {})}</div>` : ""}
+    ${inv.error && !inv.answer ? `<div class="status err">${esc(inv.error)}</div>` : ""}
+    ${!running && inv.provenance ? `<div class="prov"><span><b>${(p.cited || []).length}</b> cited${kinds ? ` (${esc(kinds)})` : ""}</span><span><b>${(p.uncited || []).length}</b> uncited</span><span>unknown <b>${(p.unknown || []).length ? esc(p.unknown.join(", ")) : "none"}</b></span></div>` : ""}
+    ${!running ? `<button class="btn sm" id="newq" style="align-self:flex-start">New question</button>` : ""}
+  </div>`;
+  $$("[data-ev]", el).forEach((b) => (b.onclick = () => showEvidence(b.dataset.ev)));
+  $("#newq")?.addEventListener("click", () => { S.inv = null; map.getSource("evidence")?.setData(FC()); renderAsk(); $("#q").value = ""; $("#q").focus(); });
+  if (running) el.scrollTop = el.scrollHeight;
+  else if (S.lastStatus === "running" || S.lastStatus === "starting") $(".answer", el)?.scrollIntoView({ block: "start", behavior: "smooth" });
+  S.lastStatus = inv.status;
+}
+function withPills(html, evidence) {
+  return html.replace(/\[((?:E\d+\s*,?\s*)+)\]/g, (_, ids) => ids.match(/E\d+/g).map((id) => `<button class="ev ${evidence[id] ? "" : "bad"}" data-ev="${id}" title="${esc(evidence[id]?.summary || "not in the evidence registry")}">${id}</button>`).join(""));
+}
+async function loadHistory() {
+  try {
+    const list = await api("/api/investigations?limit=15");
+    if (!list.length) return;
+    $("#hist").innerHTML = list.map((i) => `<div class="item" data-inv="${esc(i.id)}"><div class="t"><b style="white-space:normal">${esc(i.question)}</b></div><div class="m">${esc(hm(i.created))}Z · ${esc(i.engine || "")} · ${esc(i.status)}</div></div>`).join("");
+    $$("#hist [data-inv]").forEach((x) => (x.onclick = () => { S.invId = x.dataset.inv; S.inv = { question: "…", steps: [] }; pollInv(); }));
+  } catch {}
+}
+function plotEvidence() {
+  const ev = S.inv?.evidence || {};
+  const feats = Object.values(ev).filter((e) => e.lat != null && e.lon != null && e.kind !== "reference").map((e) => ({ type: "Feature", geometry: { type: "Point", coordinates: [e.lon, e.lat] }, properties: { id: e.id } }));
+  map.getSource("evidence")?.setData({ type: "FeatureCollection", features: feats });
+}
+function showEvidence(id) {
+  const e = S.inv?.evidence?.[id];
+  if (!e) return toast(`${esc(id)} is not in this investigation's evidence`, true);
+  map.setFilter("evidence-sel", ["==", ["get", "id"], id]);
+  if (e.lat != null && e.kind !== "reference") map.flyTo({ center: [e.lon, e.lat], zoom: Math.max(map.getZoom(), e.tool === "detect_objects" ? 17 : 13.5) });
+  const L = e.links || {};
+  const imgs = L.before && L.after
+    ? `<div class="pair"><figure><img src="${esc(L.before)}" alt="before"><figcaption class="cap">before (baseline)</figcaption></figure><figure><img src="${esc(L.after)}" alt="after"><figcaption class="cap">after</figcaption></figure></div>`
+    : L.chip ? `<div class="bigchip" style="background-image:url('${esc(L.chip)}?px=512')"></div>` : L.overlay ? `<div class="bigchip" style="background-image:url('${esc(L.overlay)}')"></div>` : "";
+  const kindNote = { observation: "a direct measurement in one image", derived: "an algorithm's output over observations", reference: "catalog / orbital / gazetteer fact" }[e.kind];
+  openInspector(`<span class="mono">${esc(id)}</span> · ${esc(e.tool)}`, `${imgs}
+    <p style="margin:0 0 14px;color:var(--text)">${esc(e.summary)}</p>
+    <dl class="kv"><dt>kind</dt><dd>${esc(e.kind)} <span style="color:var(--muted)">(${esc(kindNote)})</span></dd>${e.time ? `<dt>time</dt><dd>${esc(hm(e.time))}Z</dd>` : ""}${e.lat != null ? `<dt>position</dt><dd>${(+e.lat).toFixed(5)}, ${(+e.lon).toFixed(5)}</dd>` : ""}
+    ${Object.entries(e.data || {}).filter(([k]) => !["kind", "bbox"].includes(k)).slice(0, 8).map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(typeof v === "object" ? JSON.stringify(v) : v)}</dd>`).join("")}</dl>
+    ${e.data?.obs_id ? `<button class="btn sm" style="margin-top:14px" id="evobj">Open object</button>` : ""}`);
+  $("#evobj")?.addEventListener("click", () => inspectObject(e.data.obs_id));
+}
 
 // ------------------------------------------------------------------ imagery search
 api("/api/sources").then((list) => {
   $("#sources").innerHTML = list.map((s) => `<label class="src" title="${esc(s.coverage)} · ${esc(s.revisit)} · ${esc(s.license)}"><input type="checkbox" value="${esc(s.key)}" checked><span><span class="k">${esc(s.key)}</span><small>${esc(s.coverage)}</small></span><span class="r">${esc(s.resolution.split(" (")[0])}</span></label>`).join("");
-});
+}).catch(() => {});
 $("#go").onclick = async () => {
   if (!S.aoi) return status("#istatus", "Click the map or search a place first.", true);
   $("#go").disabled = true;
   const srcs = $$("#sources input:checked").map((i) => i.value);
   const start = S.days ? new Date(Date.now() - S.days * 864e5).toISOString().slice(0, 10) : "2014-01-01";
-  status("#istatus", `<span class="spin"></span>Searching ${srcs.length} sources (first Maxar/Umbra/Capella search builds an index, ~1 min)…`);
+  status("#istatus", `<span class="spin"></span>Searching ${srcs.length || "all"} sources…`);
   try {
-    const q = new URLSearchParams({ bbox: S.aoi.join(","), start, sources: srcs.join(","), max_cloud: $("#cloud").value, sort: $("#sort").value, limit: 60 });
+    const q = new URLSearchParams({ bbox: S.aoi.join(","), start, max_cloud: $("#cloud").value, sort: $("#sort").value, limit: 60 });
+    if (srcs.length) q.set("sources", srcs.join(","));
     const d = await api("/api/search?" + q);
     S.scenes = d.scenes; S.cur = -1; S.prev = -1;
     const counts = Object.entries(d.counts).filter(([, n]) => n).map(([k, n]) => `${k} ${n}`).join(" · ");
     const errs = Object.entries(d.errors).map(([k, v]) => `${k}: ${v}`).join("; ");
-    status("#istatus", `${d.scenes.length} scenes${counts ? " — " + esc(counts) : ""}${errs ? `<br><span style="color:var(--s-serious)">${esc(errs)}</span>` : ""}`);
+    status("#istatus", `${d.scenes.length} scenes${counts ? " · " + esc(counts) : ""}${errs ? `<br><span style="color:var(--s-serious)">${esc(errs)}</span>` : ""}`);
     renderResults(); renderTimeline();
   } catch (e) { status("#istatus", esc(e.message), true); }
   finally { $("#go").disabled = false; }
 };
-function status(sel, html, err = false) { $(sel).innerHTML = html; $(sel).classList.toggle("err", err); }
-
+async function loadNextLooks() {
+  const c = aoiCenter(); if (!c) return;
+  $("#nextlooks").innerHTML = "";
+  try {
+    const d = await api(`/api/passes?lat=${c[0].toFixed(4)}&lon=${c[1].toFixed(4)}&days=7`);
+    const first = {};
+    for (const p of d.passes) first[p.family] ??= p;
+    const rows = Object.values(first);
+    if (!rows.length) return;
+    $("#nextlooks").innerHTML = `<div class="cap" style="margin-top:12px">Next free looks</div><div class="nl">${rows.map((p) => `<span>${esc(p.family)}</span><span>${esc(p.satellite)}</span><span>${esc(hm(p.time))}Z</span>`).join("")}</div>`;
+  } catch {}
+}
 function renderResults() {
   if (!S.scenes.length) { $("#results").innerHTML = `<div class="empty">No imagery for this area and window. Try "All".</div>`; return; }
   $("#results").innerHTML = S.scenes.map((s, i) => {
-    const cloud = s.cloud_cover == null ? "" : ` · ☁ ${Math.round(s.cloud_cover)}%`;
-    const cov = s.extra.coverage < 0.999 ? ` · covers ${Math.round(s.extra.coverage * 100)}%` : "";
+    const cloud = s.cloud_cover == null ? "" : ` · ${Math.round(s.cloud_cover)}% cloud`;
+    const cov = s.extra.coverage < 0.999 ? ` · ${Math.round(s.extra.coverage * 100)}% cover` : "";
     const ctx = s.extra.event || s.extra.task || s.extra.provider || "";
     const thumb = s.thumbnail && /^https:/.test(s.thumbnail) && !/\.tif/.test(s.thumbnail) ? `style="background-image:url('${esc(s.thumbnail)}')"` : "";
     const canDetect = s.spec && (s.source === "sentinel-2" || s.sensor === "sar" || (s.sensor === "optical" && s.gsd <= 1));
-    return `<div class="card ${i === S.cur ? "sel" : ""}" data-i="${i}"><div class="thumbrow"><div class="thumb" ${thumb}>${thumb ? "" : s.sensor === "sar" ? "SAR" : "EO"}</div><div style="min-width:0">
+    return `<div class="item ${i === S.cur ? "sel" : ""}" data-i="${i}"><div class="thumbrow"><div class="thumb" ${thumb}>${thumb ? "" : s.sensor === "sar" ? "SAR" : "EO"}</div><div style="min-width:0">
       <div class="t"><span class="tag">${esc(s.source)}</span><b>${esc(day(s.datetime))}</b><span class="r">${fmtGsd(s.gsd)}</span></div>
       <div class="m">${esc(s.platform)}${cloud}${cov}${ctx ? " · " + esc(ctx) : ""}</div>
-      <div class="acts">${canDetect ? `<button class="btn sm" data-a="detect">${s.source === "sentinel-2" || s.sensor === "sar" ? "Find ships" : "Detect objects"}</button>` : ""}${s.spec ? `<button class="btn sm" data-a="png">PNG</button><button class="btn sm" data-a="tif">GeoTIFF</button>` : ""}${s.item_url ? `<a class="btn sm" style="text-decoration:none" target="_blank" rel="noopener" href="${esc(s.item_url)}">Source ↗</a>` : ""}</div>
+      <div class="acts">${canDetect ? `<button class="btn sm" data-a="detect">${s.source === "sentinel-2" || s.sensor === "sar" ? "Find ships" : "Detect objects"}</button>` : ""}${s.spec ? `<button class="btn sm" data-a="png">PNG</button><button class="btn sm" data-a="tif">GeoTIFF</button>` : ""}${s.item_url ? `<a class="btn sm" style="text-decoration:none;line-height:24px" target="_blank" rel="noopener" href="${esc(s.item_url)}">Source ↗</a>` : ""}</div>
     </div></div></div>`;
   }).join("");
 }
 $("#results").onclick = (e) => {
-  const card = e.target.closest(".card"); if (!card) return;
+  const card = e.target.closest(".item"); if (!card) return;
   const i = +card.dataset.i, a = e.target.closest("[data-a]")?.dataset.a;
   if (a === "detect") return detectScene(S.scenes[i]);
   if (a === "png" || a === "tif") return download(S.scenes[i], a);
@@ -564,36 +771,36 @@ function viewScene(i, keepPrev = false) {
   map.addLayer({ id: "scene", type: "raster", source: "scene", paint: { "raster-opacity": +$("#opacity").value, "raster-fade-duration": 0 } }, "aoi");
   map.getSource("footprint").setData(s.geometry ? { type: "Feature", geometry: s.geometry } : FC());
   $("#hud").style.display = "block";
-  $("#hudt").textContent = `${s.source} · ${s.datetime.slice(0, 16).replace("T", " ")}Z · ${s.platform} · ${fmtGsd(s.gsd)}`;
-  $$("#results .card").forEach((c) => c.classList.toggle("sel", +c.dataset.i === i));
-  $(`#results .card[data-i="${i}"]`)?.scrollIntoView({ block: "nearest" });
+  $("#hudt").textContent = `${s.source} · ${hm(s.datetime)}Z · ${s.platform} · ${fmtGsd(s.gsd)}`;
+  $$("#results .item").forEach((c) => c.classList.toggle("sel", +c.dataset.i === i));
+  $(`#results .item[data-i="${i}"]`)?.scrollIntoView({ block: "nearest" });
   renderTimeline();
-  if (S.aoi && !map.getBounds().contains([(S.aoi[0] + S.aoi[2]) / 2, lat])) map.fitBounds([[S.aoi[0], S.aoi[1]], [S.aoi[2], S.aoi[3]]], { padding: 40 });
+  if (S.aoi && !map.getBounds().contains([(S.aoi[0] + S.aoi[2]) / 2, lat])) map.fitBounds([[S.aoi[0], S.aoi[1]], [S.aoi[2], S.aoi[3]]], { padding: 60 });
 }
 $("#opacity").oninput = (e) => map.getLayer("scene") && map.setPaintProperty("scene", "raster-opacity", +e.target.value);
 $("#hideov").onclick = () => { stopBlink(); if (map.getLayer("scene")) map.removeLayer("scene"); if (map.getSource("scene")) map.removeSource("scene"); $("#hud").style.display = "none"; S.cur = -1; renderTimeline(); };
-function stopBlink() { if (S.blink) { clearInterval(S.blink); S.blink = null; $("#blink").textContent = "Blink vs previous (B)"; } }
+function stopBlink() { if (S.blink) { clearInterval(S.blink); S.blink = null; $("#blink").textContent = "Blink (B)"; } }
 $("#blink").onclick = toggleBlink;
 function toggleBlink() {
   if (S.blink) return stopBlink();
-  if (S.prev < 0 || S.cur < 0) return toast("View two scenes first (click one, then another) to blink between them.");
+  if (S.prev < 0 || S.cur < 0) return toast("View two scenes first, then blink between them.");
   let a = S.cur, b = S.prev;
-  $("#blink").textContent = "Stop blink";
+  $("#blink").textContent = "Stop";
   S.blink = setInterval(() => { [a, b] = [b, a]; viewScene(a, true); S.prev = b; }, 900);
 }
 async function download(s, fmt) {
-  const t = toast(`<span class="spin"></span>Rendering ${fmt.toUpperCase()}…`, false, 0);
+  const t = toast(`<span class="spin"></span>Rendering ${fmt.toUpperCase()}`, false, 0);
   try {
     const r = await api("/api/chip", { body: { scene: s, bbox: S.aoi, format: fmt === "png" ? "png" : "tif" } });
     const a = document.createElement("a"); a.href = URL.createObjectURL(await r.blob()); a.download = `${s.source}_${day(s.datetime)}.${fmt === "png" ? "png" : "tif"}`; a.click();
   } catch (e) { toast(esc(e.message), true); } finally { t.remove(); }
 }
 async function detectScene(s) {
-  if (!S.aoi) return toast("Set an area first.", true);
+  if (!S.aoi) return toast("Select an area first.", true);
   try {
     const { job } = await api("/api/detect", { body: { scene: s, bbox: S.aoi } });
-    const fc = await waitJob(job, s.source === "sentinel-2" || s.sensor === "sar" ? "Finding ships" : "Running YOLO (CPU; can take a few minutes)");
-    toast(`Found <b>${fc.features.length}</b> objects in ${esc(s.source)} ${esc(day(s.datetime))}. Stored under “${esc(fc.properties.site)}”.`);
+    const fc = await waitJob(job, s.source === "sentinel-2" || s.sensor === "sar" ? "Finding ships" : "Running YOLO");
+    toast(`Found <b>${fc.features.length}</b> objects in ${esc(s.source)} ${esc(day(s.datetime))} · stored under “${esc(fc.properties.site)}”`);
     refreshAll(); setMode("objects");
   } catch (e) { toast(esc(e.message), true); }
 }
@@ -604,34 +811,34 @@ function renderTimeline() {
   const el = $("#timeline");
   if (!S.scenes.length || S.mode !== "imagery") { el.style.display = "none"; return; }
   el.style.display = "block";
-  const svg = $("#tl"), W = svg.clientWidth || 800, H = 72, padL = 78, padR = 8;
+  const svg = $("#tl"), W = svg.clientWidth || 800, H = 58, padL = 74, padR = 6;
   const srcs = SRC_ORDER.filter((k) => S.scenes.some((s) => s.source === k));
   const times = S.scenes.map((s) => Date.parse(s.datetime));
   const t0 = Math.min(...times), t1 = Math.max(...times, t0 + 864e5);
   const x = (t) => padL + ((t - t0) / (t1 - t0)) * (W - padL - padR);
-  const rowH = Math.min(14, (H - 14) / Math.max(srcs.length, 1));
-  const y = (k) => 2 + srcs.indexOf(k) * rowH;
-  let out = srcs.map((k) => `<text x="${padL - 8}" y="${y(k) + rowH * 0.72}" fill="${css("--text-2")}" font-size="10" text-anchor="end" font-family="ui-monospace,monospace">${k}</text><line x1="${padL}" x2="${W - padR}" y1="${y(k) + rowH / 2}" y2="${y(k) + rowH / 2}" stroke="${css("--line")}"/>`).join("");
-  const ticks = Math.max(1, Math.min(5, Math.floor((W - padL) / 110)));
+  const rowH = Math.min(12, (H - 14) / Math.max(srcs.length, 1));
+  const y = (k) => 1 + srcs.indexOf(k) * rowH;
+  let out = srcs.map((k) => `<text x="${padL - 8}" y="${y(k) + rowH * 0.75}" fill="${css("--muted")}" font-size="9" text-anchor="end" font-family="JetBrains Mono,ui-monospace,monospace" letter-spacing=".05em">${k}</text><line x1="${padL}" x2="${W - padR}" y1="${y(k) + rowH / 2}" y2="${y(k) + rowH / 2}" stroke="rgba(255,255,255,.06)"/>`).join("");
+  const ticks = Math.max(1, Math.min(6, Math.floor((W - padL) / 120)));
   for (let i = 0; i <= ticks; i++) {
     const t = t0 + ((t1 - t0) * i) / ticks;
-    out += `<text x="${x(t)}" y="${H - 1}" fill="${css("--muted")}" font-size="10" text-anchor="${i === 0 ? "start" : i === ticks ? "end" : "middle"}" font-family="ui-monospace,monospace">${new Date(t).toISOString().slice(0, 10)}</text>`;
+    out += `<text x="${x(t)}" y="${H - 1}" fill="${css("--faint")}" font-size="9" text-anchor="${i === 0 ? "start" : i === ticks ? "end" : "middle"}" font-family="JetBrains Mono,ui-monospace,monospace">${new Date(t).toISOString().slice(0, 10)}</text>`;
   }
   S.scenes.forEach((s, i) => {
     const cx = x(Date.parse(s.datetime)), cy = y(s.source) + rowH / 2, sel = i === S.cur, prev = i === S.prev;
-    out += `<rect data-i="${i}" x="${cx - 3}" y="${cy - rowH / 2 + 2}" width="6" height="${rowH - 4}" rx="2" fill="${sel ? css("--accent") : prev ? "#ffffff" : css("--c-vessel")}" opacity="${sel || prev ? 1 : 0.75}"/>`;
-    out += `<rect data-i="${i}" x="${cx - 7}" y="${cy - rowH / 2}" width="14" height="${rowH}" fill="transparent"/>`;
+    out += `<rect x="${cx - 1.5}" y="${cy - rowH / 2 + 2}" width="3" height="${rowH - 4}" rx="1.5" fill="${sel ? "#ffffff" : prev ? "#a3a3a8" : css("--c-vessel")}" opacity="${sel || prev ? 1 : 0.8}"/>`;
+    out += `<rect data-i="${i}" x="${cx - 6}" y="${cy - rowH / 2}" width="12" height="${rowH}" fill="transparent"/>`;
   });
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
   svg.innerHTML = out;
-  $("#tlinfo").textContent = S.cur >= 0 ? `${S.cur + 1} / ${S.scenes.length} · ${day(S.scenes[S.cur].datetime)}` : `${S.scenes.length} scenes`;
+  $("#tlinfo").textContent = S.cur >= 0 ? `${S.cur + 1}/${S.scenes.length} · ${day(S.scenes[S.cur].datetime)}` : `${S.scenes.length} scenes`;
 }
 $("#tl").addEventListener("click", (e) => { const i = e.target.dataset?.i; if (i != null) viewScene(+i); });
 $("#tl").addEventListener("mousemove", (e) => {
   const i = e.target.dataset?.i, tip = $("#tip");
   if (i == null) { tip.style.display = "none"; return; }
   const s = S.scenes[+i];
-  tip.innerHTML = `<b>${esc(s.source)}</b> ${esc(s.datetime.slice(0, 16).replace("T", " "))}Z · ${fmtGsd(s.gsd)}${s.cloud_cover != null ? " · ☁ " + Math.round(s.cloud_cover) + "%" : ""}`;
+  tip.innerHTML = `${esc(s.source)} · ${esc(hm(s.datetime))}Z · ${fmtGsd(s.gsd)}${s.cloud_cover != null ? " · " + Math.round(s.cloud_cover) + "% cloud" : ""}`;
   tip.style.display = "block"; tip.style.left = e.clientX + 12 + "px"; tip.style.top = e.clientY - 34 + "px";
 });
 $("#tl").addEventListener("mouseleave", () => ($("#tip").style.display = "none"));
@@ -643,21 +850,61 @@ function step(d) {
   viewScene(order[(pos < 0 ? (d > 0 ? -1 : order.length) : pos) + d] ?? order[d > 0 ? 0 : order.length - 1]);
 }
 $("#play").onclick = () => {
-  if (S.play) { clearInterval(S.play); S.play = null; $("#play").textContent = "▶ Play"; return; }
-  $("#play").textContent = "❚❚ Pause"; S.play = setInterval(() => step(1), 1400);
+  if (S.play) { clearInterval(S.play); S.play = null; $("#play").textContent = "Play"; return; }
+  $("#play").textContent = "Pause"; S.play = setInterval(() => step(1), 1400);
 };
-document.addEventListener("keydown", (e) => {
-  if (["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement.tagName)) return;
-  if (e.key === "ArrowRight") step(1);
-  else if (e.key === "ArrowLeft") step(-1);
-  else if (e.key === "b" || e.key === "B") toggleBlink();
-  else if (e.key === "Escape") closeInspector();
-});
+
+// ------------------------------------------------------------------ change detection
+$("#crun").onclick = async () => {
+  if (!S.aoi) return status("#cstatus", "Select an area first (click the map).", true);
+  const c = aoiCenter(), r = +$("#crad").value || 3;
+  $("#crun").disabled = true;
+  status("#cstatus", `<span class="spin"></span>Reading the image and its baseline (15–60 s)…`);
+  try {
+    const body = { where: `${c[0].toFixed(5)},${c[1].toFixed(5)}`, radius_km: r, source: S.csrc, baseline: S.cbase };
+    if ($("#cafter").value) body.after = $("#cafter").value;
+    const { job } = await api("/api/change", { body });
+    const fc = await waitJob(job);
+    showChange(fc);
+  } catch (e) { status("#cstatus", esc(e.message), true); }
+  finally { $("#crun").disabled = false; }
+};
+function showChange(fc) {
+  S.change = fc;
+  const p = fc.properties;
+  if (map.getLayer("change-img")) map.removeLayer("change-img");
+  if (map.getSource("change-img")) map.removeSource("change-img");
+  map.addSource("change-img", { type: "image", url: `/api/change/${p.id}/overlay.png`, coordinates: p.corners });
+  map.addLayer({ id: "change-img", type: "raster", source: "change-img", paint: { "raster-opacity": +$("#copac").value, "raster-resampling": "nearest" } }, "change-line");
+  map.getSource("change-regions").setData({ type: "FeatureCollection", features: fc.features.map((f, i) => ({ ...f, id: i, properties: { ...f.properties, rid: i } })) });
+  $("#cctl").style.display = "block";
+  const kinds = Object.entries(p.by_kind).map(([k, v]) => `<span class="chip"><span class="dot" style="background:${kcol(k)}"></span>${k.replace(/_/g, " ")} <span class="mono" style="color:var(--muted)">${v.regions} · ${(v.area_m2 / 1e4).toFixed(1)} ha</span></span>`).join("");
+  status("#cstatus", `${esc(p.method)} · ${esc(day(p.after.time))} vs ${p.before.map((b) => esc(day(b.time))).join(", ")} · ${Math.round(p.valid_fraction * 100)}% comparable${p.notes.length ? "<br>" + p.notes.map(esc).join("<br>") : ""}`);
+  $("#clist").innerHTML = (kinds ? `<div class="chips" style="padding:4px 6px 10px">${kinds}</div>` : "") + (fc.features.length ? fc.features.map((f, i) => {
+    const q = f.properties;
+    const vals = Object.entries(q.values || {}).map(([m, v]) => `${m} ${v[0]}→${v[1]}`).join(" · ");
+    return `<div class="item" data-rid="${i}"><div class="t"><span class="dot" style="background:${kcol(q.kind)}"></span><b>${esc(q.kind.replace(/_/g, " "))}</b><span class="r">${(q.area_m2 / 1e4).toFixed(2)} ha</span></div><div class="m">conf ${pct(q.confidence)} · ${esc(vals)}</div></div>`;
+  }).join("") : `<div class="empty">No significant change. Quiet is information too.</div>`);
+  if (fc.features.length) map.fitBounds([[p.corners[3][0], p.corners[2][1]], [p.corners[1][0], p.corners[0][1]]], { padding: 60 });
+}
+$("#copac").oninput = (e) => map.getLayer("change-img") && map.setPaintProperty("change-img", "raster-opacity", +e.target.value);
+$("#clist").onclick = (e) => { const c = e.target.closest("[data-rid]"); if (c) inspectRegion(+c.dataset.rid, true); };
+function inspectRegion(i, fly = false) {
+  const fc = S.change; if (!fc) return;
+  const f = fc.features[i]; if (!f) return;
+  const q = f.properties, cid = fc.properties.id, bb = q.bbox.join(",");
+  if (fly) map.fitBounds([[q.bbox[0], q.bbox[1]], [q.bbox[2], q.bbox[3]]], { padding: 160, maxZoom: 16 });
+  openInspector(`<span class="dot" style="background:${kcol(q.kind)};display:inline-block;margin-right:8px"></span>${esc(q.kind.replace(/_/g, " "))}`,
+    `<div class="pair"><figure><img src="/api/change/${cid}/before.png?bbox=${bb}" alt="before"><figcaption class="cap">baseline</figcaption></figure><figure><img src="/api/change/${cid}/after.png?bbox=${bb}" alt="after"><figcaption class="cap">${esc(day(fc.properties.after.time))}</figcaption></figure></div>
+     <p style="margin:0 0 14px;color:var(--text-2)">${esc(q.meaning)}</p>
+     <dl class="kv"><dt>area</dt><dd>${(q.area_m2 / 1e4).toFixed(2)} ha</dd><dt>confidence</dt><dd>${pct(q.confidence)} (score ${q.score})</dd><dt>position</dt><dd>${q.lat}, ${q.lon}</dd>
+     ${Object.entries(q.values || {}).map(([m, v]) => `<dt>${esc(m)}</dt><dd>${v[0]} → ${v[1]}</dd>`).join("")}</dl>`);
+}
 
 // ------------------------------------------------------------------ objects
 async function refreshObjects() {
   if (!map.getSource("objects")) return;
-  if (map.getZoom() < 4) { S.objects = FC(); applyObjects(); status("#ostatus", "Zoom in to load objects (or pick a site)."); return; }
+  if (map.getZoom() < 4) { S.objects = FC(); applyObjects(); status("#ostatus", "Zoom in to load objects."); return; }
   try {
     const q = new URLSearchParams({ bbox: viewBbox(), limit: 40000 });
     if (S.days) q.set("days", S.days);
@@ -665,7 +912,6 @@ async function refreshObjects() {
     applyObjects();
   } catch (e) { status("#ostatus", esc(e.message), true); }
 }
-function famOf(cls) { return FAM[cls] || "other"; }
 function applyObjects() {
   const fc = S.objects || FC();
   const counts = { vessel: 0, aircraft: 0, vehicle: 0, other: 0 };
@@ -679,7 +925,7 @@ function applyObjects() {
   }
   map.getSource("objects")?.setData({ type: "FeatureCollection", features: feats });
   renderLegend(counts);
-  status("#ostatus", `${feats.length.toLocaleString()} objects in view${S.days ? ` (last ${S.days} days)` : ""}`);
+  status("#ostatus", `${feats.length.toLocaleString()} objects in view${S.days ? ` · last ${S.days} days` : ""}`);
   if (S.mode === "objects") renderObjectList();
 }
 $("#minconf").oninput = (e) => { S.minconf = +e.target.value; $("#minconfv").textContent = S.minconf.toFixed(2); applyObjects(); };
@@ -689,12 +935,12 @@ function renderObjectList() {
     .sort((a, b) => (b.properties.length_m || 0) - (a.properties.length_m || 0)).slice(0, 80);
   $("#objlist").innerHTML = items.length ? items.map((f) => {
     const p = f.properties, a = p.attrs || {};
-    const flags = [a.dark ? "DARK" : "", a.ais ? "AIS" : "", a.underway ? "UNDERWAY" : ""].filter(Boolean).map((t) => `<span class="tag">${t}</span>`).join(" ");
-    return `<div class="card" data-oid="${esc(f.id)}"><div class="t"><span class="dot" style="background:${famColor(p.cls)}"></span><b>${esc(p.cls)}</b><span class="r">${fmtLen(p.length_m)}</span></div>
-      <div class="m">${esc(day(p.time))} · ${esc(p.source)} · conf ${pct(p.confidence)}${a.track_id ? ` · track ${esc(a.track_id)}` : ""}</div>${flags ? `<div class="acts">${flags}</div>` : ""}</div>`;
-  }).join("") : `<div class="empty">No objects here yet. Search imagery and run “Find ships” / “Detect objects”, or sweep a site.</div>`;
+    const flags = [a.dark ? "dark" : "", a.ais ? "ais" : "", a.underway ? "underway" : ""].filter(Boolean).map((t) => `<span class="tag">${t}</span>`).join(" ");
+    return `<div class="item" data-oid="${esc(f.id)}"><div class="t"><span class="dot" style="background:${famColor(p.cls)}"></span><b>${esc(p.cls)}</b><span class="r">${fmtLen(p.length_m)}</span></div>
+      <div class="m">${esc(day(p.time))} · ${esc(p.source)} · conf ${pct(p.confidence)}${a.track_id ? ` · ${esc(a.track_id)}` : ""}</div>${flags ? `<div class="acts">${flags}</div>` : ""}</div>`;
+  }).join("") : `<div class="empty">No objects here yet.<br>Ask Oracle, run “Find ships” on an image, or sweep a site.</div>`;
 }
-$("#objlist").onclick = (e) => { const c = e.target.closest(".card"); if (c) inspectObject(c.dataset.oid, true); };
+$("#objlist").onclick = (e) => { const c = e.target.closest(".item"); if (c) inspectObject(c.dataset.oid, true); };
 
 // ------------------------------------------------------------------ tracks
 async function loadTrackLayer() {
@@ -706,14 +952,14 @@ async function loadTracks() {
   const min = +$("#minobs").value, st = $("#tstatus").value;
   const ts = (S.tracks?.features || []).map((f) => f.properties).filter((t) => t.n_obs >= min && (!st || t.status === st)).sort((a, b) => b.n_obs - a.n_obs || (b.length_m || 0) - (a.length_m || 0));
   status("#tstat", `${ts.length} tracks with ≥ ${min} sightings`);
-  $("#tracklist").innerHTML = ts.length ? ts.slice(0, 200).map((t) => `<div class="card" data-tid="${esc(t.id)}">
-    <div class="t"><span class="dot" style="background:${famColor(t.cls)}"></span><b>${esc(t.cls)}</b><span style="color:var(--muted);font:11px var(--mono)">${esc(t.id)}</span><span class="r">${fmtLen(t.length_m)}</span></div>
-    <div class="m">${t.n_obs} sightings · ${esc(day(t.first_seen))} → ${esc(day(t.last_seen))} · ${esc(t.status)} · ${esc((t.sources || []).join("+"))}</div>
-    <div style="display:flex;align-items:center;gap:8px;margin-top:6px"><span style="font-size:11px;color:var(--muted);flex:none">same-object confidence</span><div class="meter" style="flex:1"><i style="width:${Math.round((t.mean_link_prob || 0) * 100)}%"></i></div><span style="font:600 11px var(--mono)">${pct(t.mean_link_prob)}</span></div>
-  </div>`).join("") : `<div class="empty">No tracks yet. Tracks appear once a site has been imaged more than once (Sites → Sweep).</div>`;
+  $("#tracklist").innerHTML = ts.length ? ts.slice(0, 200).map((t) => `<div class="item" data-tid="${esc(t.id)}">
+    <div class="t"><span class="dot" style="background:${famColor(t.cls)}"></span><b>${esc(t.cls)}</b><span class="mono" style="color:var(--muted);font-size:10.5px">${esc(t.id)}</span><span class="r">${fmtLen(t.length_m)}</span></div>
+    <div class="m">${t.n_obs} sightings · ${esc(day(t.first_seen))} → ${esc(day(t.last_seen))} · ${esc(t.status)}</div>
+    <div style="display:flex;align-items:center;gap:10px;margin-top:8px"><div class="meter" style="flex:1"><i style="width:${Math.round((t.mean_link_prob || 0) * 100)}%"></i></div><span class="mono" style="font-size:10.5px;color:var(--text-2)">${pct(t.mean_link_prob)} same-object</span></div>
+  </div>`).join("") : `<div class="empty">No tracks yet. They appear once a place has been imaged more than once.</div>`;
 }
 $("#minobs").onchange = loadTracks; $("#tstatus").onchange = loadTracks;
-$("#tracklist").onclick = (e) => { const c = e.target.closest(".card"); if (c) inspectTrack(c.dataset.tid, true); };
+$("#tracklist").onclick = (e) => { const c = e.target.closest(".item"); if (c) inspectTrack(c.dataset.tid, true); };
 
 // ------------------------------------------------------------------ sites
 async function loadSiteLayer() {
@@ -727,38 +973,62 @@ async function loadSiteLayer() {
 async function loadSites() { await loadSiteLayer(); renderSites(); }
 function renderSites() {
   const sites = (S.sites || []).slice().sort((a, b) => b.max_severity_30d - a.max_severity_30d || b.observations - a.observations);
-  $("#sitelist").innerHTML = sites.length ? sites.map((s) => `<div class="card" data-site="${esc(s.name)}">
+  $("#sitelist").innerHTML = sites.length ? sites.map((s) => `<div class="item" data-site="${esc(s.name)}">
     <div class="t"><b>${esc(s.name)}</b><span class="tag">${esc(s.kind || "")}</span><span class="r">${s.max_severity_30d ? sevBadge(s.max_severity_30d) : ""}</span></div>
     <div class="m">${(s.observations || 0).toLocaleString()} objects · ${esc((s.detectors || []).join(", "))}</div>
     <svg class="spark" data-spark="${esc(s.name)}" aria-label="objects per image"></svg>
-    <div class="acts"><button class="btn sm" data-a="fly">Fly to</button><button class="btn sm" data-a="process">Sweep now</button><button class="btn sm" data-a="del">Remove</button></div>
-  </div>`).join("") : `<div class="empty">No sites yet. Add one from the map view, or load a preset list above.</div>`;
+    <div class="acts"><button class="btn sm" data-a="fly">Fly to</button><button class="btn sm" data-a="process">Sweep</button><button class="btn sm" data-a="heat">Pattern of life</button><button class="btn sm" data-a="del">Remove</button></div>
+  </div>`).join("") : `<div class="empty">No sites yet. Add one for the selected area, or load a preset.</div>`;
   $$("#sitelist svg[data-spark]").forEach((svg, i) => setTimeout(() => drawSpark(svg), i * 40));
 }
 async function drawSpark(svg) {
-  const name = svg.dataset.spark;
   let d;
-  try { d = await api(`/api/sites/${encodeURIComponent(name)}/series`); } catch { return; }
-  const rows = d.series.slice(-40);
-  if (!rows.length) { svg.outerHTML = `<div class="m" style="margin-top:4px">not swept yet</div>`; return; }
-  const W = svg.clientWidth || 300, H = 34, gap = 2, bw = Math.max(2, (W - gap * (rows.length - 1)) / rows.length);
+  try { d = await api(`/api/sites/${encodeURIComponent(svg.dataset.spark)}/series`); } catch { return; }
+  const rows = d.series.slice(-48);
+  if (!rows.length) { svg.outerHTML = `<div class="m" style="margin-top:6px">not swept yet</div>`; return; }
+  const W = svg.clientWidth || 300, H = 28, gap = 2, bw = Math.max(2, (W - gap * (rows.length - 1)) / rows.length);
   const vals = rows.map((r) => Object.values(r.counts).reduce((a, b) => a + b, 0)), mx = Math.max(...vals, 1);
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
   svg.innerHTML = rows.map((r, i) => {
     const v = vals[i], h = Math.max(1.5, (v / mx) * (H - 2)), cloudy = (r.clear ?? 1) < 0.85;
-    return `<rect x="${i * (bw + gap)}" y="${H - h}" width="${bw}" height="${h}" rx="${Math.min(2, bw / 2)}" fill="${css("--c-vessel")}" opacity="${cloudy ? 0.3 : 0.9}"><title>${day(r.time)} · ${r.source} · ${v} objects${cloudy ? " · cloudy (unreliable)" : ""}</title></rect>`;
+    return `<rect x="${i * (bw + gap)}" y="${H - h}" width="${bw}" height="${h}" rx="1" fill="${cloudy ? "#45454b" : "#d4d4d8"}"><title>${day(r.time)} · ${r.source} · ${v} objects${cloudy ? " · cloudy" : ""}</title></rect>`;
   }).join("");
 }
 $("#sitelist").onclick = async (e) => {
-  const c = e.target.closest(".card"); if (!c) return;
+  const c = e.target.closest(".item"); if (!c) return;
   const s = S.sites.find((x) => x.name === c.dataset.site), a = e.target.closest("[data-a]")?.dataset.a;
-  if (a === "del") { if (!confirm(`Remove site “${s.name}”? (Its stored objects stay in the database.)`)) return; await api(`/api/sites/${encodeURIComponent(s.name)}`, { method: "DELETE" }); return loadSites(); }
+  if (a === "del") { if (!confirm(`Remove site “${s.name}”? Stored objects stay in the database.`)) return; await api(`/api/sites/${encodeURIComponent(s.name)}`, { method: "DELETE" }); return loadSites(); }
   if (a === "process") {
-    try { const { job } = await api(`/api/sites/${encodeURIComponent(s.name)}/process?lookback_days=${S.days || 60}`, { method: "POST" }); const r = await waitJob(job, `Sweeping ${s.name}`); toast(`${esc(s.name)}: +${r.new_scenes} images, +${r.new_observations} objects, ${r.new_events} new events`); refreshAll(); loadSites(); } catch (err) { toast(esc(err.message), true); }
+    try { const { job } = await api(`/api/sites/${encodeURIComponent(s.name)}/process?lookback_days=${S.days || 60}`, { method: "POST" }); const r = await waitJob(job, `Sweeping ${s.name}`); toast(`${esc(s.name)} · +${r.new_scenes} images · +${r.new_observations} objects · ${r.new_events} new events`); refreshAll(); loadSites(); } catch (err) { toast(esc(err.message), true); }
     return;
   }
-  map.fitBounds([[s.bbox[0], s.bbox[1]], [s.bbox[2], s.bbox[3]]], { padding: 40 });
+  if (a === "heat") return heatmap(s);
+  map.fitBounds([[s.bbox[0], s.bbox[1]], [s.bbox[2], s.bbox[3]]], { padding: 60 });
 };
+async function heatmap(s) {
+  const fam = { airbase: "aircraft", ground: "vehicle" }[s.kind] || "vessel";
+  try {
+    const d = await api(`/api/sites/${encodeURIComponent(s.name)}/heatmap?family=${fam}`);
+    const g = d.per_km2_per_look, ny = g.length, nx = g[0]?.length || 0;
+    if (!nx) return toast("No history yet: sweep the site first.");
+    const mx = Math.max(...g.flat(), 1e-9);
+    const cv = document.createElement("canvas"); cv.width = nx; cv.height = ny;
+    const ctx = cv.getContext("2d"), img = ctx.createImageData(nx, ny);
+    const col = css("--c-" + fam).match(/\w\w/g).map((h) => parseInt(h, 16));
+    for (let i = 0; i < ny; i++) for (let j = 0; j < nx; j++) {
+      const v = Math.sqrt(g[i][j] / mx), k = (i * nx + j) * 4;
+      img.data.set([col[0], col[1], col[2], Math.round(v * 210)], k);
+    }
+    ctx.putImageData(img, 0, 0);
+    const [w, so, e, n] = s.bbox;
+    if (map.getLayer("heat")) map.removeLayer("heat");
+    if (map.getSource("heat")) map.removeSource("heat");
+    map.addSource("heat", { type: "image", url: cv.toDataURL(), coordinates: [[w, n], [e, n], [e, so], [w, so]] });
+    map.addLayer({ id: "heat", type: "raster", source: "heat", paint: { "raster-opacity": 0.85, "raster-resampling": "linear" } }, "sites-line");
+    map.fitBounds([[w, so], [e, n]], { padding: 60 });
+    toast(`Pattern of life: where ${fam}s usually are, over ${d.looks} clear looks`);
+  } catch (err) { toast(esc(err.message), true); }
+}
 $$("[data-preset]").forEach((c) => (c.onclick = async () => {
   try { const r = await api(`/api/sites/preset/${c.dataset.preset}`, { method: "POST" }); toast(`Added ${r.added.length} sites`); loadSites(); loadStats(); } catch (e) { toast(esc(e.message), true); }
 }));
@@ -771,23 +1041,23 @@ $("#sweepall").onclick = async () => {
   $("#sweepall").disabled = true;
   try {
     const { job } = await api("/api/sweep", { body: { lookback_days: S.days || 60, max_scenes: 6 } });
-    const res = await waitJob(job, "Sweeping all sites (minutes for many sites)");
+    const res = await waitJob(job, "Sweeping all sites");
     const tot = res.reduce((a, r) => [a[0] + (r.new_scenes || 0), a[1] + (r.new_observations || 0), a[2] + (r.new_events || 0)], [0, 0, 0]);
-    toast(`Sweep done: +${tot[0]} images, +${tot[1]} objects, ${tot[2]} new events`); refreshAll(); loadSites();
+    toast(`Sweep done · +${tot[0]} images · +${tot[1]} objects · ${tot[2]} new events`); refreshAll(); loadSites();
   } catch (e) { toast(esc(e.message), true); } finally { $("#sweepall").disabled = false; }
 };
 
-// ------------------------------------------------------------------ brief & events
+// ------------------------------------------------------------------ events & brief
 async function loadEvents() {
   try {
     const ev = await api(`/api/events?days=${S.days || 3650}&limit=200`);
-    $("#eventlist").innerHTML = ev.length ? ev.map((e) => `<div class="card" data-e='${esc(JSON.stringify({ lat: e.detail.lat, lon: e.detail.lon, obs: e.obs_id, track: e.track_id }))}'>
-      <div class="t">${sevBadge(e.severity)}<span class="tag">${esc(e.kind.replace(/_/g, " "))}</span><span class="r" style="font-weight:400;color:var(--muted);font-size:11px">${esc(e.time.slice(0, 16).replace("T", " "))}Z</span></div>
-      <div style="margin-top:4px">${esc(e.title)}</div></div>`).join("") : `<div class="empty">No events in this window.</div>`;
+    $("#eventlist").innerHTML = ev.length ? ev.map((e) => `<div class="item" data-e='${esc(JSON.stringify({ lat: e.detail.lat, lon: e.detail.lon, obs: e.obs_id, track: e.track_id }))}'>
+      <div class="t">${sevBadge(e.severity)}<span class="tag">${esc(e.kind.replace(/_/g, " "))}</span><span class="r mono" style="font-weight:400;color:var(--muted);font-size:10.5px">${esc(hm(e.time))}Z</span></div>
+      <div style="margin-top:5px;color:var(--text)">${esc(e.title)}</div></div>`).join("") : `<div class="empty">No events in this window.</div>`;
   } catch (e) { $("#eventlist").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }
 $("#eventlist").onclick = (e) => {
-  const c = e.target.closest(".card"); if (!c) return;
+  const c = e.target.closest(".item"); if (!c) return;
   const d = JSON.parse(c.dataset.e);
   if (d.lat != null) map.flyTo({ center: [d.lon, d.lat], zoom: Math.max(map.getZoom(), 14) });
   if (d.track) inspectTrack(d.track); else if (d.obs) inspectObject(d.obs);
@@ -796,7 +1066,7 @@ $("#mkbrief").onclick = async () => {
   $("#mkbrief").disabled = true;
   status("#bstatus", `<span class="spin"></span>Writing brief…`);
   try {
-    const r = await api(`/api/brief?days=${S.days || 30}&llm=${$("#engine").value}`);
+    const r = await api(`/api/brief?days=${S.days || 30}&llm=${S.bengine}`);
     $("#briefout").innerHTML = md(r.markdown);
     status("#bstatus", r.engine === "claude" ? "Written by Claude from the digest." : "Built-in report (no Claude credentials configured).");
   } catch (e) { status("#bstatus", esc(e.message), true); } finally { $("#mkbrief").disabled = false; }
@@ -804,9 +1074,9 @@ $("#mkbrief").onclick = async () => {
 function md(src) {
   const inline = (s) => esc(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/(^|[\s(])_(.+?)_(?=[\s).,;:]|$)/g, "$1<em>$2</em>").replace(/(^|[\s(])\*(?!\s)(.+?)\*(?=[\s).,;:]|$)/g, "$1<em>$2</em>").replace(/`(.+?)`/g, "<code>$1</code>");
   let html = "", list = false;
-  for (const raw of src.split("\n")) {
+  for (const raw of String(src || "").split("\n")) {
     const line = raw.trimEnd();
-    const li = line.match(/^\s*[-*]\s+(.*)$/), h = line.match(/^(#{1,3})\s+(.*)$/);
+    const li = line.match(/^\s*(?:[-*]|\d+\.)\s+(.*)$/), h = line.match(/^(#{1,3})\s+(.*)$/);
     if (!li && list) { html += "</ul>"; list = false; }
     if (h) html += `<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`;
     else if (li) { if (!list) { html += "<ul>"; list = true; } html += `<li>${inline(li[1])}</li>`; }
@@ -817,11 +1087,15 @@ function md(src) {
 
 // ------------------------------------------------------------------ inspector
 function openInspector(title, html) { $("#ititle").innerHTML = title; $("#ibody").innerHTML = html; $("#insp").classList.add("open"); }
-function closeInspector() { $("#insp").classList.remove("open"); map.getLayer("objects-sel") && map.setFilter("objects-sel", ["==", ["get", "oid"], ""]); map.getLayer("tracks-sel") && map.setFilter("tracks-sel", ["==", ["get", "id"], ""]); }
+function closeInspector() {
+  $("#insp").classList.remove("open");
+  map.getLayer("objects-sel") && map.setFilter("objects-sel", ["==", ["get", "oid"], ""]);
+  map.getLayer("tracks-sel") && map.setFilter("tracks-sel", ["==", ["get", "id"], ""]);
+  map.getLayer("evidence-sel") && map.setFilter("evidence-sel", ["==", ["get", "id"], ""]);
+}
 $("#iclose").onclick = closeInspector;
-function findObj(oid) { return (S.objects?.features || []).find((f) => f.id === oid); }
 async function inspectObject(oid, fly = false) {
-  let f = findObj(oid);
+  let f = (S.objects?.features || []).find((x) => x.id === oid);
   if (!f) { try { f = await api(`/api/obs/${encodeURIComponent(oid)}`); } catch {} }
   map.setFilter("objects-sel", ["==", ["get", "oid"], oid]);
   if (!f) { openInspector("Object", `<div class="bigchip" style="background-image:url('/api/obs/${esc(oid)}/chip.png')"></div>`); return; }
@@ -829,15 +1103,16 @@ async function inspectObject(oid, fly = false) {
   if (fly) map.flyTo({ center: f.geometry.coordinates, zoom: Math.max(map.getZoom(), 15) });
   const rows = [
     ["class", p.cls + (a.label && a.label !== p.cls ? ` (${a.label})` : "")], ["size", `${fmtLen(p.length_m)} × ${fmtLen(p.width_m)}`],
-    ["seen", p.time.slice(0, 16).replace("T", " ") + "Z"], ["source", `${p.source} · ${p.detector}`], ["confidence", pct(p.confidence)],
+    ["seen", hm(p.time) + "Z"], ["source", `${p.source} · ${p.detector}`], ["confidence", pct(p.confidence)],
     ["position", `${f.geometry.coordinates[1].toFixed(5)}, ${f.geometry.coordinates[0].toFixed(5)}`],
-    p.axis_deg != null ? ["axis", `${p.axis_deg}°`] : null, a.underway != null ? ["motion", a.underway ? `underway${p.course_deg != null ? `, heading ${p.course_deg}°` : ""}${a.wake_m ? `, wake ${Math.round(a.wake_m)} m` : ""}` : "no wake (stationary or slow)"] : null,
+    p.axis_deg != null ? ["axis", `${p.axis_deg}°`] : null,
+    a.underway != null ? ["motion", a.underway ? `underway${p.course_deg != null ? `, heading ${p.course_deg}°` : ""}${a.wake_m ? `, wake ${Math.round(a.wake_m)} m` : ""}` : "no wake (stationary or slow)"] : null,
     a.ais ? ["AIS", `${a.ais.mmsi} ${a.ais.name || ""} · ${a.ais.distance_m} m · p ${pct(a.ais.p)}`] : a.dark ? ["AIS", "none nearby (dark candidate)"] : null,
   ].filter(Boolean);
   openInspector(`<span class="dot" style="background:${famColor(p.cls)};display:inline-block;margin-right:8px"></span>${esc(p.cls)} · ${fmtLen(p.length_m)}`,
     `<div class="bigchip" style="background-image:url('/api/obs/${esc(oid)}/chip.png?size_m=${Math.max(200, (p.length_m || 50) * 4)}&px=512')"></div>
      <dl class="kv">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>
-     ${a.track_id ? `<h4>Track</h4><div class="card" id="gotrack"><div class="t"><b>${esc(a.track_id)}</b><span class="r">${pct(a.link_prob)}</span></div><div class="m">probability this sighting is the same object as the track's earlier ones</div></div>` : ""}`);
+     ${a.track_id ? `<h4 class="cap">Track</h4><div class="item" id="gotrack"><div class="t"><b>${esc(a.track_id)}</b><span class="r">${pct(a.link_prob)}</span></div><div class="m">probability this sighting is the same object as earlier ones</div></div>` : ""}`);
   $("#gotrack")?.addEventListener("click", () => inspectTrack(a.track_id, true));
 }
 async function inspectTrack(tid, fly = false) {
@@ -847,19 +1122,19 @@ async function inspectTrack(tid, fly = false) {
   const obs = t.observations;
   if (fly && obs.length) {
     const xs = obs.map((o) => o.lon), ys = obs.map((o) => o.lat);
-    map.fitBounds([[Math.min(...xs), Math.min(...ys)], [Math.max(...xs), Math.max(...ys)]], { padding: 120, maxZoom: 15 });
+    map.fitBounds([[Math.min(...xs), Math.min(...ys)], [Math.max(...xs), Math.max(...ys)]], { padding: 140, maxZoom: 15 });
   }
   const sights = obs.map((o, i) => `<div class="sight"><img loading="lazy" alt="" src="/api/obs/${esc(o.id)}/chip.png?size_m=${Math.max(200, (o.length_m || 50) * 4)}">
-    <div><div class="when">${esc(o.time.slice(0, 16).replace("T", " "))}Z</div><div class="m">${esc(o.source)} · ${fmtLen(o.length_m)}${o.attrs.underway ? " · underway" : ""}${o.attrs.dark ? " · DARK" : ""}</div>
-    ${i === 0 ? `<div class="m">first sighting</div>` : `<div style="display:flex;align-items:center;gap:6px;margin-top:4px"><div class="meter" style="flex:1"><i style="width:${Math.round((o.attrs.link_prob || 0) * 100)}%"></i></div><span style="font:600 11px var(--mono)">${pct(o.attrs.link_prob)}</span></div><div class="m">same object as previous sighting</div>`}</div></div>`).join("");
+    <div><div class="when">${esc(hm(o.time))}Z</div><div class="m">${esc(o.source)} · ${fmtLen(o.length_m)}${o.attrs.underway ? " · underway" : ""}${o.attrs.dark ? " · dark" : ""}</div>
+    ${i === 0 ? `<div class="m">first sighting</div>` : `<div style="display:flex;align-items:center;gap:8px;margin-top:6px"><div class="meter" style="flex:1"><i style="width:${Math.round((o.attrs.link_prob || 0) * 100)}%"></i></div><span class="mono" style="font-size:10.5px">${pct(o.attrs.link_prob)}</span></div><div class="m">same object as previous sighting</div>`}</div></div>`).join("");
   const alts = (t.alternatives || []).sort((a, b) => b.prob - a.prob).slice(0, 8);
-  openInspector(`<span class="dot" style="background:${famColor(t.cls)};display:inline-block;margin-right:8px"></span>Track ${esc(t.id)}`,
+  openInspector(`<span class="dot" style="background:${famColor(t.cls)};display:inline-block;margin-right:8px"></span>Track <span class="mono">${esc(t.id)}</span>`,
     `<dl class="kv"><dt>class</dt><dd>${esc(t.cls)} · ~${fmtLen(t.length_m)}</dd><dt>sightings</dt><dd>${t.n_obs} (${esc((t.attrs.sources || []).join(" + "))})</dd>
-     <dt>window</dt><dd>${esc(t.first_seen.slice(0, 10))} → ${esc(t.last_seen.slice(0, 10))} (${t.attrs.dwell_days} d)</dd><dt>status</dt><dd>${esc(t.status)}</dd>
-     <dt>moved</dt><dd>${t.distance_m != null ? (t.distance_m / 1000).toFixed(2) + " km total" : "–"}${t.speed_ms ? ` · ${(t.speed_ms * 1.944).toFixed(1)} kn between images` : ""}</dd>
+     <dt>window</dt><dd>${esc(day(t.first_seen))} → ${esc(day(t.last_seen))} (${t.attrs.dwell_days} d)</dd><dt>status</dt><dd>${esc(t.status)}</dd>
+     <dt>moved</dt><dd>${t.distance_m != null ? (t.distance_m / 1000).toFixed(2) + " km" : "–"}${t.speed_ms ? ` · ${(t.speed_ms * 1.944).toFixed(1)} kn between images` : ""}</dd>
      <dt>confidence</dt><dd>${pct(t.mean_link_prob)} mean link probability</dd></dl>
-     <h4>Sightings</h4>${sights}
-     ${alts.length ? `<h4>Possibly also</h4>${alts.map((a) => `<div class="m" style="padding:3px 0">obs ${esc(a.obs_id)} → track <a href="#" data-alt="${esc(a.track_id)}" style="color:var(--accent)">${esc(a.track_id)}</a> · ${pct(a.prob)}</div>`).join("")}` : ""}`);
+     <h4 class="cap">Sightings</h4>${sights}
+     ${alts.length ? `<h4 class="cap">Possibly also</h4>${alts.map((a) => `<div class="m" style="padding:3px 0;color:var(--muted)">obs ${esc(a.obs_id)} → <a href="#" data-alt="${esc(a.track_id)}" style="color:var(--hi)">${esc(a.track_id)}</a> · ${pct(a.prob)}</div>`).join("")}` : ""}`);
   $$("#ibody [data-alt]").forEach((el) => (el.onclick = (e) => { e.preventDefault(); inspectTrack(el.dataset.alt, true); }));
 }
 

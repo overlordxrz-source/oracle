@@ -34,5 +34,8 @@ def check_scene(scene: Scene) -> None:
     if scene.render.kind != "xyz":
         for h in scene.render.hrefs:
             check_href(h)
-    for h in (scene.extra.get("bands") or {}).values():
-        check_href(h)
+    for bands in [scene.extra.get("bands") or {}, *(scene.extra.get("band_mosaic") or [])]:
+        for h in bands.values():
+            check_href(h)
+    if scene.extra.get("cross_pol"):
+        check_href(scene.extra["cross_pol"])

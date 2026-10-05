@@ -53,6 +53,9 @@ CREATE TABLE IF NOT EXISTS ais(
   mmsi INTEGER, time TEXT, lat REAL, lon REAL, sog REAL, cog REAL, name TEXT,
   length_m REAL, vtype TEXT, PRIMARY KEY(mmsi, time));
 CREATE INDEX IF NOT EXISTS ais_time ON ais(time);
+CREATE TABLE IF NOT EXISTS investigations(
+  id TEXT PRIMARY KEY, question TEXT, created TEXT, finished TEXT, status TEXT, engine TEXT,
+  answer TEXT, data TEXT);
 """
 
 OBS_COLS = (
@@ -416,7 +419,11 @@ class Store:
             c.execute("CREATE TEMP TABLE IF NOT EXISTS keep_ids(id TEXT PRIMARY KEY)")
             c.execute("DELETE FROM keep_ids")
             c.executemany("INSERT OR IGNORE INTO keep_ids VALUES(?)", [(i,) for i in ids])
-            c.execute("DELETE FROM events WHERE site=? AND id NOT IN (SELECT id FROM keep_ids)", (site,))
+            # change_* events come from change detection runs, not from the tracker: keep them.
+            c.execute(
+                "DELETE FROM events WHERE site=? AND substr(kind, 1, 7) != 'change_' AND id NOT IN (SELECT id FROM keep_ids)",
+                (site,),
+            )
         return self.add_events(events)
 
     def events(self, since: datetime | None = None, site: str | None = None, limit: int = 500) -> list[dict]:
@@ -435,6 +442,37 @@ class Store:
             d["detail"] = json.loads(d["detail"] or "{}")
             out.append(d)
         return out
+
+    # ------------------------------------------------------------------ investigations
+    def save_investigation(self, inv: dict) -> None:
+        with self.tx() as c:
+            c.execute(
+                "INSERT OR REPLACE INTO investigations VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    inv["id"],
+                    inv["question"],
+                    inv["created"],
+                    inv.get("finished"),
+                    inv["status"],
+                    inv.get("engine"),
+                    inv.get("answer"),
+                    json.dumps({k: inv.get(k) for k in ("steps", "evidence", "provenance", "error")}, default=str),
+                ),
+            )
+
+    def investigation(self, inv_id: str) -> dict | None:
+        r = self.conn.execute("SELECT * FROM investigations WHERE id=?", (inv_id,)).fetchone()
+        if not r:
+            return None
+        d = dict(r)
+        d.update(json.loads(d.pop("data") or "{}"))
+        return d
+
+    def investigations(self, limit: int = 50) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT id, question, created, finished, status, engine FROM investigations ORDER BY created DESC LIMIT ?", (limit,)
+        )
+        return [dict(r) for r in rows]
 
     def stats(self) -> dict:
         c = self.conn

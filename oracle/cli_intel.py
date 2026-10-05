@@ -1,4 +1,4 @@
-"""CLI for the intelligence layer: detect, sites, sweep, tracks, events, brief, ais, db."""
+"""CLI for the intelligence layer: ask, detect, change, sites, sweep, tracks, events, brief, ais, passes, db, doctor."""
 
 from __future__ import annotations
 
@@ -292,6 +292,156 @@ def cmd_db(args) -> None:
     print(json.dumps(st.stats(), indent=1))
 
 
+def cmd_change(args) -> None:
+    from .change import KINDS, detect_change, to_events
+
+    aoi = parse_aoi(args.where, args.radius)
+    after = parse_dt(args.after + "T23:59:59Z") if args.after else None
+    before = parse_dt(args.before + "T23:59:59Z") if args.before else None
+    t0 = time.time()
+    res = detect_change(
+        aoi,
+        args.source,
+        after=after,
+        before=before,
+        n_before=args.baseline_images,
+        baseline=args.baseline,
+        k=args.k,
+        min_area_m2=args.min_area,
+    )
+    s = res.summary()
+    print(f"{s['method']}: {res.after.date} vs {', '.join(b['time'][:10] for b in s['before'])}")
+    print(f"  {s['valid_fraction']:.0%} of the area comparable, {len(res.regions)} change regions in {time.time() - t0:.0f}s")
+    for n in s["notes"]:
+        print(f"  note: {n}")
+    for k, v in s["by_kind"].items():
+        print(f"  {k:<20} {v['regions']:>4} regions {v['area_m2'] / 1e4:>8.1f} ha   ({KINDS[k][0]})")
+    for r in res.regions[: args.top]:
+        vals = "  ".join(f"{m} {a[0]:g}->{a[1]:g}" for m, a in r.values.items())
+        print(f"  {r.kind:<20} {r.area_m2 / 1e4:>6.2f} ha  conf {r.confidence:.0%}  {r.lat:.5f},{r.lon:.5f}  {vals}")
+    paths = res.save(args.out)
+    print("  -> " + ", ".join(str(p) for p in paths.values()))
+    if args.site:
+        st = _store()
+        evs = to_events(res, args.site)
+        print(f"  stored {st.add_events(evs)} change events under site {args.site!r}")
+
+
+def cmd_ask(args) -> None:
+    from .agent import investigate
+
+    def show(step: dict) -> None:
+        if step["type"] == "tool" and step.get("status") == "running":
+            print(f"  -> {step['tool']} {json.dumps(step['input'])[:110]}", file=sys.stderr)
+        elif step["type"] == "tool":
+            mark = "!!" if step["status"] == "error" else "ok"
+            ev = f" [{', '.join(step['evidence'][:4])}{'...' if len(step['evidence']) > 4 else ''}]" if step["evidence"] else ""
+            print(f"     {mark} {step['ms'] / 1000:.1f}s {step['summary'][:150]}{ev}", file=sys.stderr)
+        elif args.verbose or step["type"] == "note":
+            print(f"  .. {step['summary'][:300]}", file=sys.stderr)
+
+    use = False if args.no_llm else (True if args.llm else None)
+    inv = investigate(args.question, use_llm=use, max_calls=args.max_calls, effort=args.effort, on_step=show)
+    print(f"\n[{inv.engine}] {inv.status}  (investigation {inv.id})\n", file=sys.stderr)
+    print(inv.answer)
+    ev = inv.toolbox.evidence
+    p = inv.provenance
+    if ev:
+        print("\n---\nEvidence")
+        for eid in p.get("cited") or []:
+            if eid in ev:
+                e = ev[eid]
+                link = f"  {next(iter(e.links.values()))}" if e.links else ""
+                print(f"  [{eid}] {e.kind:<11} {e.summary[:140]}{link}")
+        print(
+            f"  provenance: {len(p.get('cited', []))} cited "
+            f"({', '.join(f'{v} {k}' for k, v in p.get('cited_by_kind', {}).items() if v)}), "
+            f"{len(p.get('uncited', []))} uncited, unknown: {', '.join(p.get('unknown') or []) or 'none'}"
+        )
+    if args.json:
+        Path(args.json).write_text(json.dumps(inv.to_dict(), indent=1, default=str))
+        print(f"  -> {args.json}", file=sys.stderr)
+
+
+def cmd_passes(args) -> None:
+    from .passes import next_passes
+
+    aoi = parse_aoi(args.where, 1.0)
+    lat, lon = aoi.center
+    fams = _csv(args.families) or None
+    ps = next_passes(lat, lon, days=args.days, families=fams)
+    shown = [p for p in ps if p.likely or args.all]
+    print(f"overpasses of {lat:.4f},{lon:.4f} in the next {args.days:g} days (SGP4 on public TLEs)")
+    print(f"{'UTC':<17} {'satellite':<12} {'family':<10} {'off-track':>9} {'side':<5} {'pass':<10} {'sun':>5}  note")
+    for p in shown:
+        mark = "" if p.likely else "  -"
+        print(
+            f"{p.time:%Y-%m-%d %H:%M}  {p.satellite:<12} {p.family:<10} {p.cross_track_km:>7.0f}km {p.side:<5} "
+            f"{p.direction:<10} {p.sun_elevation:>5.0f}  {p.note}{mark}"
+        )
+    if not shown:
+        print("  no likely acquisitions; try --days 14 or --all")
+    print("(likely = imaging geometry allows it; Sentinel-1 also depends on the mission's acquisition plan)")
+
+
+def cmd_doctor(args) -> None:
+    """Environment report: hardware acceleration, models, credentials, network, storage."""
+    import importlib.util
+    import os
+    import platform
+
+    import httpx
+
+    from . import __version__
+    from .config import CACHE_DIR, USER_AGENT
+
+    def row(k: str, v: str) -> None:
+        print(f"  {k:<22} {v}")
+
+    print(f"oracle {__version__} on {platform.platform()} (Python {platform.python_version()}, {platform.machine()})")
+    print("compute")
+    if importlib.util.find_spec("torch"):
+        import torch
+
+        from .objdet import pick_device, resolve_model
+
+        row("torch", torch.__version__)
+        row("cuda", str(torch.cuda.is_available()))
+        mps = getattr(torch.backends, "mps", None)
+        row("apple mps", str(bool(mps and mps.is_available())))
+        row("yolo device", pick_device())
+        row("yolo model (auto)", resolve_model("auto"))
+    else:
+        row("torch", 'not installed (pip install -e ".[ai]" for YOLO)')
+    print("llm")
+    row("anthropic sdk", "installed" if importlib.util.find_spec("anthropic") else 'missing (pip install -e ".[llm]")')
+    has_key = bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
+    row("credentials", "env var set" if has_key else "none in env (ant auth login profiles also work)")
+    print("storage")
+    total = sum(f.stat().st_size for f in CACHE_DIR.rglob("*") if f.is_file()) if CACHE_DIR.exists() else 0
+    row("cache", f"{CACHE_DIR} ({total / 1e6:.0f} MB)")
+    st = _store()
+    s = st.stats()
+    row("database", f"{st.path} ({s['observations']} objects, {s['tracks']} tracks, {s['sites']} sites)")
+    print("network")
+    hosts = {
+        "earth-search (S2)": "https://earth-search.aws.element84.com/v1",
+        "planetary computer": "https://planetarycomputer.microsoft.com/api/stac/v1",
+        "maxar open data": "https://maxar-opendata.s3.amazonaws.com/events/catalog.json",
+        "umbra": "https://umbra-open-data-catalog.s3.us-west-2.amazonaws.com/stac/catalog.json",
+        "esri wayback": "https://s3-us-west-2.amazonaws.com/config.maptiles.arcgis.com/waybackconfig.json",
+        "worldcover": "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/ESA_WorldCover_10m_2021_v200_N24E054_Map.tif",
+        "celestrak (orbits)": "https://celestrak.org/NORAD/elements/gp.php?CATNR=40697&FORMAT=TLE",
+    }
+    with httpx.Client(headers={"User-Agent": USER_AGENT}, timeout=15, follow_redirects=True) as c:
+        for name, url in hosts.items():
+            try:
+                r = c.head(url) if url.endswith(".tif") else c.get(url)
+                row(name, f"{r.status_code} in {r.elapsed.total_seconds() * 1000:.0f} ms")
+            except httpx.HTTPError as exc:
+                row(name, f"FAILED ({type(exc).__name__})")
+
+
 def register(sub) -> None:
     def where(sp, radius):
         sp.add_argument("-r", "--radius", type=float, default=radius, help=f"km around a point (default {radius})")
@@ -305,7 +455,11 @@ def register(sub) -> None:
     sp.add_argument("--end")
     sp.add_argument("--date", help="YYYY-MM-DD (also sets the time of a --file without one)")
     sp.add_argument("--scene")
-    sp.add_argument("--model", default="yolo11l-obb.pt", help="any Ultralytics weights (yolo11s-obb.pt is ~3x faster)")
+    sp.add_argument(
+        "--model",
+        default="auto",
+        help="auto (x on GPU/Apple Silicon, l on CPU) or any Ultralytics weights, e.g. yolo11s-obb.pt (~3x faster)",
+    )
     sp.add_argument("--gsd", type=float, help="force one pass at this m/px (default: multi-scale)")
     sp.add_argument("--conf", type=float, default=0.3)
     sp.add_argument("--classes", help="keep only these, e.g. aircraft,helicopter")
@@ -373,3 +527,39 @@ def register(sub) -> None:
 
     sp = sub.add_parser("db", help="object database location and counts")
     sp.set_defaults(fn=cmd_db)
+
+    sp = sub.add_parser("change", help="what changed on the ground (Sentinel-2 multi-index / Sentinel-1 radar)")
+    sp.add_argument("where", help="lat,lon | bbox | place")
+    where(sp, 3.0)
+    sp.add_argument("-s", "--source", default="sentinel-2", choices=("sentinel-2", "sentinel-1"))
+    sp.add_argument("--after", help="YYYY-MM-DD: newest image on/before this date (default: latest)")
+    sp.add_argument("--before", help="YYYY-MM-DD: baseline images on/before this date (default: just before)")
+    sp.add_argument("--baseline", default="recent", choices=("recent", "anniversary"), help="anniversary = same season last year")
+    sp.add_argument("--baseline-images", type=int, default=3, help="images composited into the baseline")
+    sp.add_argument("--k", type=float, default=3.0, help="robust z threshold (higher = fewer, surer changes)")
+    sp.add_argument("--min-area", type=float, default=1500.0, help="smallest change region, m^2")
+    sp.add_argument("--top", type=int, default=15)
+    sp.add_argument("--site", help="also store significant changes as events of this site")
+    sp.add_argument("-o", "--out", default="oracle-out")
+    sp.set_defaults(fn=cmd_change)
+
+    sp = sub.add_parser("ask", help="ask Oracle a question; it investigates with its tools and cites evidence")
+    sp.add_argument("question")
+    g = sp.add_mutually_exclusive_group()
+    g.add_argument("--llm", action="store_true", help="require Claude")
+    g.add_argument("--no-llm", action="store_true", help="offline playbook only")
+    sp.add_argument("--max-calls", type=int, default=20, help="tool-call budget")
+    sp.add_argument("--effort", default="high", choices=("low", "medium", "high", "xhigh", "max"))
+    sp.add_argument("-v", "--verbose", action="store_true", help="also show the model's thinking summaries")
+    sp.add_argument("--json", help="write the full investigation (steps, evidence, provenance) here")
+    sp.set_defaults(fn=cmd_ask)
+
+    sp = sub.add_parser("passes", help="when will Sentinel-1/2 and Landsat next image a place (orbit prediction)")
+    sp.add_argument("where", help="lat,lon | bbox | place")
+    sp.add_argument("--days", type=float, default=7.0)
+    sp.add_argument("--families", help="sentinel-2,sentinel-1,landsat (default all)")
+    sp.add_argument("--all", action="store_true", help="also list passes whose geometry can't image the place")
+    sp.set_defaults(fn=cmd_passes)
+
+    sp = sub.add_parser("doctor", help="check hardware acceleration, models, credentials and network")
+    sp.set_defaults(fn=cmd_doctor)

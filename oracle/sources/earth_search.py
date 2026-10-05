@@ -52,7 +52,7 @@ def _to_scene(item: dict, collection: str) -> Scene | None:
     if not visual:
         return None
     p = item["properties"]
-    bands = {k: asset_href(item, k) for k in ("red", "green", "blue", "nir", "scl", "swir16") if asset_href(item, k)}
+    bands = {k: asset_href(item, k) for k in ("red", "green", "blue", "nir", "scl", "swir16", "swir22") if asset_href(item, k)}
     nir_meta = (item["assets"].get("nir", {}).get("raster:bands") or [{}])[0]
     return Scene(
         id=item["id"],

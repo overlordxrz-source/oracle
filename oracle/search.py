@@ -100,6 +100,8 @@ def _merge(group: list[Scene], aoi: AOI) -> Scene:
         best.bbox = (min(x[0] for x in b), min(x[1] for x in b), max(x[2] for x in b), max(x[3] for x in b))
         best.geometry = None
     best.extra["merged_ids"] = [s.id for s in group[1:]]
+    if best.extra.get("bands"):  # per-band mosaics for analysis (change detection)
+        best.extra["band_mosaic"] = [s.extra["bands"] for s in group[1:] if s.extra.get("bands")]
     return best
 
 

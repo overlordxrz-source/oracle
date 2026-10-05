@@ -162,7 +162,7 @@ def refresh_site(store: Store, site: Site) -> dict:
     for t in tracks:
         for o in t.obs:
             o.attrs["alternatives"] = alts.get(o.id) or None
-    events = analytics.generate(site.name, tracks, obs, scene_times, clear)
+    events = analytics.generate(site.name, tracks, obs, scene_times, clear, coverage=coverage)
     new_events = store.replace_events(site.name, events)
     return {"tracks": len(tracks), "events": len(events), "new_events": new_events}
 

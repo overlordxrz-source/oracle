@@ -9,6 +9,8 @@ Event kinds (severity 0-1, higher = more interesting):
   fast_vessel              track speed between observations above ~23 kn
   loitering                vessel present and stationary for 14+ days
   possible_task_group      >= 250 m hull with several 100-220 m hulls within 15 km
+  sts_candidate            two hulls rafted alongside (ship-to-ship transfer?)    [patterns.py]
+  unusual_location         stationary object where the site's history has none   [patterns.py]
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from datetime import datetime
 
 import numpy as np
 
+from . import patterns
 from .observations import AIRCRAFT, HELICOPTER, VESSEL, Observation
 from .tracking import Track, family
 
@@ -59,8 +62,10 @@ def generate(
     scene_times: dict[str, datetime],
     clear: dict[str, float] | None = None,
     clear_enough: float = 0.85,
+    coverage: dict[str, tuple] | None = None,
 ) -> list[dict]:
-    """Events for one site. ``clear``: scene_id -> cloud-free fraction of the site."""
+    """Events for one site. ``clear``: scene_id -> cloud-free fraction of the site;
+    ``coverage``: scene_id -> the part of the site (bbox) a clear scene imaged."""
     events: list[dict] = []
     if not obs:
         return events
@@ -170,6 +175,8 @@ def generate(
 
     clear_times = {sid: t for sid, t in scene_times.items() if clear.get(sid, 1.0) >= clear_enough}
     events += count_anomalies(site, [o for o in obs if o.scene_id in clear_times], clear_times)
+    events += patterns.sts_candidates(site, obs, clear, clear_enough)
+    events += patterns.unusual_locations(site, obs, scene_times, clear, coverage, clear_enough)
     return events
 
 

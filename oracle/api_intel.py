@@ -299,6 +299,134 @@ def process_one(name: str, lookback_days: int = 30, max_scenes: int = 6) -> dict
     return {"job": jobs.submit("process", process_site, st, Site.from_row(row), since, None, max_scenes)}
 
 
+# --------------------------------------------------------------------------- agent
+
+
+class AskBody(BaseModel):
+    question: str
+    llm: str = "auto"  # auto | on | off
+    max_calls: int = 20
+    effort: str = "high"
+
+
+@router.post("/investigate")
+def start_investigation(body: AskBody) -> dict:
+    from .agent import Investigation, investigate, register
+
+    q = body.question.strip()
+    if not q or len(q) > 2000:
+        raise HTTPException(400, "question must be 1-2000 characters")
+    if body.effort not in ("low", "medium", "high", "xhigh", "max"):
+        raise HTTPException(400, "effort: low | medium | high | xhigh | max")
+    inv = register(Investigation(q))
+    use = {"auto": None, "on": True, "off": False}.get(body.llm)
+    jid = jobs.submit(
+        "investigate",
+        lambda: investigate(q, store(), use, max(1, min(body.max_calls, 40)), body.effort, inv=inv).id,
+    )
+    return {"id": inv.id, "job": jid}
+
+
+@router.get("/investigations")
+def investigation_list(limit: int = 30) -> list[dict]:
+    return store().investigations(limit)
+
+
+@router.get("/investigations/{inv_id}")
+def investigation(inv_id: str) -> dict:
+    from .agent import live
+
+    d = live(inv_id) or store().investigation(inv_id)
+    if not d:
+        raise HTTPException(404, "no such investigation")
+    return d
+
+
+# --------------------------------------------------------------------------- change detection
+
+
+class ChangeBody(BaseModel):
+    bbox: list[float] | None = None
+    where: str | None = None
+    radius_km: float = 3.0
+    source: str = "sentinel-2"
+    after: str | None = None  # YYYY-MM-DD
+    before: str | None = None
+    baseline: str = "recent"
+    site: str | None = None
+
+
+@router.post("/change")
+def start_change(body: ChangeBody) -> dict:
+    try:
+        aoi = AOI(tuple(body.bbox)) if body.bbox else parse_aoi(body.where or "", body.radius_km)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    w, h = aoi.size_km()
+    if w * h > 1600:
+        raise HTTPException(400, f"area too large for the web app ({w * h:.0f} km2 > 1600); use the CLI")
+    if body.source not in ("sentinel-2", "sentinel-1"):
+        raise HTTPException(400, "source must be sentinel-2 or sentinel-1")
+    return {"job": jobs.submit("change", _change, aoi, body)}
+
+
+def _change(aoi: AOI, body: ChangeBody) -> dict:
+    from .change import detect_change, remember, to_events
+    from .models import parse_dt
+
+    res = remember(
+        detect_change(
+            aoi,
+            body.source,
+            after=parse_dt(body.after + "T23:59:59Z") if body.after else None,
+            before=parse_dt(body.before + "T23:59:59Z") if body.before else None,
+            baseline=body.baseline,
+        )
+    )
+    if body.site:
+        store().add_events(to_events(res, body.site))
+    return res.geojson()
+
+
+@router.get("/change/{cid}/{which}.png")
+def change_image(cid: str, which: str, bbox: str | None = None) -> Response:
+    from .change import recall
+
+    res = recall(cid)
+    if res is None:
+        raise HTTPException(404, "change result expired; run it again")
+    if which not in ("before", "after", "overlay", "change"):
+        raise HTTPException(404, "before | after | overlay | change")
+    return Response(res.png(which, crop=_bbox(bbox)), media_type="image/png", headers={"Cache-Control": "max-age=3600"})
+
+
+# --------------------------------------------------------------------------- orbits & patterns
+
+
+@router.get("/passes")
+def passes(lat: float, lon: float, days: float = Query(7.0, gt=0, le=30), all: bool = False) -> dict:
+    from .passes import next_passes
+
+    try:
+        ps = next_passes(lat, lon, days=days)
+    except Exception as exc:  # noqa: BLE001 - TLE download or propagation failure
+        raise HTTPException(503, f"orbit prediction unavailable: {exc}") from None
+    return {"lat": lat, "lon": lon, "days": days, "passes": [p.to_dict() for p in ps if p.likely or all]}
+
+
+@router.get("/sites/{name}/heatmap")
+def heatmap(name: str, family: str = "vessel") -> dict:
+    """Pattern-of-life density: where objects of a family usually are, per look per km^2."""
+    from .patterns import density_grid
+
+    st = store()
+    row = next((s for s in st.sites() if s["name"] == name), None)
+    if not row:
+        raise HTTPException(404, "no such site")
+    looks = sum(1 for r in st.runs(name) if r["status"] == "ok" and (r.get("clear") or 1.0) >= 0.85)
+    return density_grid(st.observations(site=name), tuple(row["bbox"]), family, looks)
+
+
 @router.get("/jobs/{jid}")
 def job(jid: str) -> dict:
     j = jobs.get(jid)

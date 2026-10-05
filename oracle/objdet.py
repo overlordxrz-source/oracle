@@ -22,6 +22,8 @@ from __future__ import annotations
 import contextlib
 import functools
 import math
+import os
+import sys
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -36,7 +38,7 @@ from .models import Scene
 from .observations import AIRCRAFT, HELICOPTER, LARGE_VEHICLE, OTHER, STORAGE_TANK, VEHICLE, VESSEL, Observation
 
 MODEL_DIR = CACHE_DIR / "models"
-DEFAULT_MODEL = "yolo11l-obb.pt"  # s/m are faster; l was clearly best on cars (256 vs 161 for s)
+DEFAULT_MODEL = "auto"  # x on a GPU / Apple Silicon, l on CPU (l found 256 cars vs 161 for s)
 WORLD_MODEL = "yolov8s-worldv2.pt"
 
 DOTA_TO_CLASS = {
@@ -53,8 +55,41 @@ class DetectorUnavailable(RuntimeError):
     pass
 
 
+if sys.platform == "darwin":
+    # Apple Silicon: let the few ops MPS lacks fall back to CPU instead of erroring.
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
+
+@functools.lru_cache(maxsize=1)
+def pick_device() -> str:
+    """CUDA GPU > Apple Silicon GPU (MPS) > CPU. Override with ORACLE_DEVICE."""
+    if os.environ.get("ORACLE_DEVICE"):
+        return os.environ["ORACLE_DEVICE"]
+    try:
+        import torch
+    except ImportError:
+        return "cpu"
+    if torch.cuda.is_available():
+        return "cuda:0"
+    mps = getattr(torch.backends, "mps", None)
+    if mps is not None and mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+def resolve_model(name: str = DEFAULT_MODEL) -> str:
+    """``auto`` -> the largest DOTA OBB model the hardware runs comfortably.
+    Override with ORACLE_YOLO_MODEL (any Ultralytics weights name or path)."""
+    if name != "auto":
+        return name
+    if os.environ.get("ORACLE_YOLO_MODEL"):
+        return os.environ["ORACLE_YOLO_MODEL"]
+    return "yolo11x-obb.pt" if pick_device() != "cpu" else "yolo11l-obb.pt"
+
+
 @functools.lru_cache(maxsize=4)
 def load_model(name: str = DEFAULT_MODEL):
+    name = resolve_model(name)
     try:
         from ultralytics import YOLO
     except ImportError as exc:  # pragma: no cover - depends on optional extra
@@ -183,7 +218,7 @@ def detect_array(
     step = tile - overlap
     windows = [(r, c) for r in range(0, max(h - overlap, 1), step) for c in range(0, max(w - overlap, 1), step)]
     to_wgs = Transformer.from_crs(grid.crs, 4326, always_xy=True)
-    det_name = Path(model).stem + (":" + ",".join(prompts) if prompts else "")
+    det_name = Path(resolve_model(model)).stem + (":" + ",".join(prompts) if prompts else "")
     out: list[Observation] = []
     todo = []
     for r0, c0 in windows:
@@ -194,11 +229,13 @@ def detect_array(
         part = rgba[r0 : r0 + tile, c0 : c0 + tile, :3]
         img[: part.shape[0], : part.shape[1]] = part[..., ::-1]  # RGB -> BGR for ultralytics
         todo.append((r0, c0, img))
-    log(f"  yolo: {len(todo)} tile(s) of {tile}px at {grid.res:.2f} m/px")
+    if pick_device() != "cpu":
+        batch = max(batch, 8)
+    log(f"  yolo: {len(todo)} tile(s) of {tile}px at {grid.res:.2f} m/px on {pick_device()}")
     half = overlap // 2
     for i in range(0, len(todo), batch):
         chunk = todo[i : i + batch]
-        results = yolo.predict([t[2] for t in chunk], imgsz=tile, conf=conf, verbose=False)
+        results = yolo.predict([t[2] for t in chunk], imgsz=tile, conf=conf, verbose=False, device=pick_device())
         for (r0, c0, _), res in zip(chunk, results, strict=True):
             # keep boxes whose centre is in this tile's core, so overlaps don't double count
             lo_r, lo_c = (half if r0 > 0 else 0), (half if c0 > 0 else 0)

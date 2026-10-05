@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oracle-osint"
-version = "0.2.0"
-description = "Free satellite OSINT: multi-archive imagery search, YOLO/ship detection, cross-date tracking, events and briefs"
+version = "0.3.0"
+description = "Free satellite OSINT: imagery search, YOLO/ship detection, change detection, tracking, pattern of life, and an evidence-citing investigation agent"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -19,6 +19,7 @@ dependencies = [
   "httpx>=0.25",
   "fastapi>=0.110",
   "uvicorn>=0.25",
+  "sgp4>=2.22",                     # overpass prediction (pure Python, tiny)
 ]
 
 [project.optional-dependencies]

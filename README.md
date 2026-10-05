@@ -1,6 +1,8 @@
 # Oracle
 
-A free satellite OSINT workbench. Oracle does five things:
+A free satellite OSINT workbench. Ask it a question in plain language and it
+investigates with its own tools, then answers with numbered evidence you can click.
+Underneath, Oracle does seven things:
 
 1. **Finds** the best free imagery of any point on Earth for any time window. It
    searches 8 archives at once and ranks them by resolution, coverage and cloud.
@@ -12,10 +14,35 @@ A free satellite OSINT workbench. Oracle does five things:
    it's the same object*.
 4. **Raises events**: arrivals, departures, count anomalies, dark vessels, loitering
    and fast movers, ranked by severity across as many sites as you like.
-5. **Briefs** you. Claude writes the summary if you've configured it; otherwise you
-   get a built-in report.
+5. **Sees change**: new construction, earthworks, land reclamation, floods, burn
+   scars and cleared ground, from optical or all-weather radar against a multi-date
+   baseline.
+6. **Knows the pattern of life** of a place: ship-to-ship rendezvous, objects where
+   the site's own history says nothing ever is, and when the next free satellite
+   pass will come.
+7. **Investigates and briefs.** The Oracle agent plans, calls the tools above, reads
+   the results and writes an answer. Every claim cites evidence (E1, E2, ...) that
+   traces back to a specific image, detection or algorithm. It runs on Claude if
+   you've configured it, and as an offline playbook if not.
 
-No accounts, no API keys, no paid data. Claude briefs are the only optional extra.
+No accounts, no API keys, no paid data. Claude is the only optional extra.
+
+```
+$ oracle ask "Are there large ships waiting off Fujairah?" --no-llm
+  -> geocode {"place": "Fujairah"}                    ok 0.4s  Fujairah -> 25.41474,56.23137 [E1]
+  -> search_imagery {..., "days_back": 30}            ok 16.7s 32 images: sentinel-1 18, sentinel-2 7, landsat 7 [E2]
+  -> get_events {..., "days": 60}                     ok 0.0s  [sts_candidate] Unusually wide 222 x 82 m hull (possible rafted pair) [E3, E4]
+  -> detect_ships {..., "radius_km": 25}              ok 53.3s 101 vessels in sentinel-2 2026-10-04 07:02Z [E5, E6, ...]
+  -> next_passes {...}                                ok 0.1s  sentinel-2 2026-10-06T07:02Z, sentinel-1 2026-10-06T14:24Z [E21]
+
+**Bottom line**
+- 101 vessels in sentinel-2 2026-10-04 07:02Z (100% of area clear): 9 of 200 m or more,
+  25 underway, 76 stationary or unknown [E5]
+**What the imagery shows**
+- 319 m vessel at 25.23811,56.41183 on 2026-10-04 07:02Z (sentinel-2), underway course 112 [E6]
+- [sts_candidate] Unusually wide 222 x 82 m hull (possible rafted pair) ... [E3]
+  ...
+```
 
 ```
 $ oracle sites preset chokepoints                 # 14 shipping chokepoints
@@ -66,14 +93,47 @@ pip install -e ".[all]"     # or: -e .  (core)  |  -e ".[ai]" (YOLO)  |  -e ".[l
 oracle serve                # http://127.0.0.1:8000
 ```
 
-YOLO runs on CPU; a GPU just makes it faster. For Claude briefs, set
-`ANTHROPIC_API_KEY` (or run `ant auth login`). Without it, briefs fall back to the
-built-in report.
+For Claude (the agent and briefs), set `ANTHROPIC_API_KEY` or run `ant auth login`.
+Without it, `oracle ask` runs the offline playbook and briefs use the built-in report.
+`oracle doctor` checks your setup: acceleration, model choice, credentials, storage,
+and whether every data source is reachable.
+
+### Hardware: it adapts on its own
+
+YOLO picks the device and model size automatically:
+
+| machine | device | default model |
+|---|---|---|
+| NVIDIA GPU | `cuda:0` | `yolo11x-obb` (largest, most accurate) |
+| **Apple Silicon (M1-M5)** | `mps` (Metal) | `yolo11x-obb` |
+| CPU only | `cpu` | `yolo11l-obb` (found 256 cars vs 161 for `s`) |
+
+On a Mac, `pip install -e ".[all]"` installs a PyTorch build with Metal support, and
+Oracle sets `PYTORCH_ENABLE_MPS_FALLBACK=1` so the few unsupported ops fall back to the
+CPU. A **MacBook Air has no fan**: a single detection is fast, but a long sweep of
+YOLO sites will throttle after several minutes. For sustained runs use
+`ORACLE_YOLO_MODEL=yolo11l-obb.pt` (or `--model`). The ship and change detectors
+don't use the GPU at all; they're I/O-bound.
+
+Overrides: `ORACLE_DEVICE=cpu|mps|cuda:0`, `ORACLE_YOLO_MODEL=<weights>`,
+`ORACLE_DB=<path>`, `ORACLE_CACHE=<dir>`.
 
 ## The console (`oracle serve`)
 
-A MapLibre map with five modes (rail on the left):
+A dark, minimal, full-screen map. The basemap is dimmed so detections and change stand
+out. The command bar (⌘K or `/`) does two things: type a question and Oracle
+**investigates**, or type a place or `lat,lon` and it **goes** there. The views sit in a
+slim dock on the left:
 
+- **Ask.** Live investigation: every tool call appears as it runs, with its inputs,
+  timing, result and the evidence it produced. Thinking summaries appear too when
+  Claude is the engine. The answer's citations are pills: click one to fly to it and
+  open the evidence (the detection chip, or before/after crops for a change). Evidence
+  with a location is plotted on the map. A provenance line counts cited, uncited and
+  unknown evidence. Past investigations are kept.
+- **Change.** Pick optical or radar and a recent or same-season-last-year baseline,
+  then run on the selected area. Change regions are drawn on the map by kind, and each
+  opens a before/after pair.
 - **Imagery.** Search all archives for the area you clicked or typed. Results are
   ranked, and a **timeline** shows every scene by source and date: click a scene,
   step with ←/→, **play** through them, or **blink** (B) between two dates to spot
@@ -85,10 +145,14 @@ A MapLibre map with five modes (rail on the left):
 - **Tracks.** Objects seen more than once. The inspector shows a chip for every
   sighting with a *same-object* probability bar for each link, plus the "possibly
   also" alternatives the tracker considered.
-- **Sites & sweeps.** Watched places with severity badges and per-image activity
-  bars (cloudy passes are dimmed). Load presets (chokepoints, naval bases, US
-  airbases), add a site from the map view, and sweep one site or all of them.
-- **Brief & events.** Ranked events (click to fly there) and a one-click brief.
+- **Sites.** Watched places with severity badges and per-image activity bars (cloudy
+  passes are dimmed). Load presets (chokepoints, naval bases, US airbases), add a
+  site, sweep one site or all of them, or show a site's **pattern of life**: a heatmap
+  of where its vessels, aircraft or vehicles usually are.
+- **Events.** Ranked events (click to fly there) and a one-click brief.
+
+Selecting an area also shows the **next free looks**: when Sentinel-2, Sentinel-1 and
+Landsat will next pass over it.
 
 The server binds to 127.0.0.1. Endpoints that read imagery only accept URLs from the
 public data buckets the sources use (an allowlist), so they can't be used to fetch
@@ -109,6 +173,13 @@ oracle ships     WHERE [-r KM] [--days N] [-s sentinel-2|sentinel-1|umbra|capell
 oracle detect    WHERE | --file my.tif [--classes aircraft,helicopter] [--prompt "fighter jet,truck"]
                  [--model yolo11s-obb.pt] [--no-vehicles] [--site NAME]
 
+# ask (the agent)
+oracle ask       "QUESTION" [--llm | --no-llm] [--max-calls 20] [--effort high] [-v] [--json inv.json]
+
+# change, orbits
+oracle change    WHERE [-r KM] [-s sentinel-2|sentinel-1] [--after D] [--before D] [--baseline recent|anniversary] [--site S]
+oracle passes    WHERE [--days 7] [--families sentinel-2,sentinel-1,landsat] [--all]
+
 # intelligence loop
 oracle sites     add NAME WHERE [-r KM] [--kind maritime|naval|airbase|ground] | list | rm NAME
 oracle sites     preset chokepoints|naval-bases|airbases-us|all
@@ -119,6 +190,7 @@ oracle events    [--since 7d] [--site S] [--min-severity 0.5]
 oracle brief     [--since 7d] [--llm | --no-llm] [-o brief.md]
 oracle ais       load positions.csv [--bbox w,s,e,n] [--start D --end D]
 oracle db                                         # database location + counts
+oracle doctor                                     # hardware, models, credentials, network
 ```
 
 `WHERE` = `lat,lon` | `west,south,east,north` | a place name (OpenStreetMap geocoding).
@@ -224,6 +296,86 @@ tracks, data gaps):
   intent. Server-side refusal fallbacks are enabled.
 - **Without:** the same digest as a Markdown report.
 
+### Change detection: "what is physically different?"
+
+Detectors only find classes they were trained on. Change detection finds what's new
+whatever it is: earthworks, a new pier, a flooded field, a burn scar.
+
+- **Optical (Sentinel-2, 6 bands, 10 m).** Up to three clear earlier images are
+  composited per pixel (median, with cloud, shadow and snow masked by the scene
+  classification) into a **baseline**. Two-date differencing is noisy (haze, a parked
+  ship, one bad pixel); a multi-date baseline cancels most of that. For each index
+  (NDVI, MNDWI, NBR, brightness, SWIR) the difference becomes a **robust z-score
+  against the whole area**, so scene-wide shifts from season, sun or atmosphere cancel
+  out. Classes, in priority order:
+  - `new_water` and `water_loss`: need the water index and SWIR to agree, which keeps
+    out glint, plumes and algae;
+  - `burn`: a large NBR drop where the ground got darker (char), unlike cleared soil,
+    which brightens;
+  - `vegetation_loss`;
+  - `new_bright_surface`: needs SWIR to brighten too, which haze can't do;
+  - `surface_change`: change-vector magnitude over the haze-robust bands.
+
+  Ship-shaped "water loss" is dropped, because ships have their own detector.
+  `--baseline anniversary` compares with the same season last year, so harvests and
+  leaf-fall don't read as change.
+- **Radar (Sentinel-1, VV+VH).** Speckle is suppressed with 5×5 multilooking plus a
+  temporal mean over the baseline. Change is a log-ratio of at least 3 dB plus a
+  robust-z test, split into `radar_increase` (new structures, vehicles, containers) and
+  `radar_decrease` (removal, flooding). The sea is masked with WorldCover, and the
+  baseline prefers images from the same orbit direction as the newest image.
+- **Measured.** At Palm Jebel Ali (active construction), optical and radar both
+  concentrated change on the island's trunk. Zooming in on the top optical region
+  showed new dark excavation and a newly filled basin. The first version also flagged
+  turbid lagoon water as "water loss"; the SWIR test now removes that. The port of
+  Fujairah came back with no change across two weeks.
+
+### Pattern of life
+
+- **Ship-to-ship (STS) rendezvous.** Two hulls lying alongside: centres closer than
+  their combined beams plus ~60 m, parallel within 25°, overlapping along their
+  length, and not one ship passing the other. On 10 m imagery a rafted pair can merge
+  into one unusually wide hull, so those are flagged too. A pair seen together on
+  several dates scores higher. Crowded anchorages score lower, because rafting there
+  is routine.
+- **Unusual location.** A kernel density of where each class has been in every
+  earlier clear image covering the spot (vessels ~300 m, aircraft ~60 m, vehicles
+  ~25 m). A new *stationary* object where history expects under 0.02 objects per look
+  is flagged: a ship anchored in a lane nobody anchors in, or aircraft on an apron
+  that's always empty. It needs 6+ clear looks first, so it stays silent at new sites.
+- **Collection planning.** Public TLEs (CelesTrak, with a mirror and a 12 h cache)
+  are propagated with SGP4. Each closest approach is checked against the real imaging
+  geometry: a 290 km nadir swath for Sentinel-2, 185 km for Landsat, descending
+  daylight passes only, and Sentinel-1's right-looking 345-617 km radar swath. The
+  predicted Sentinel-2A pass over Hormuz at 07:02 UTC and the Sentinel-2B pass over
+  Singapore at 03:37 UTC both match the archive's acquisition times.
+
+### The Oracle agent and provenance
+
+`oracle ask` (or the command bar) runs an investigation:
+
+- **With Claude** (`claude-opus-5-5`, adaptive thinking, server-side refusal
+  fallbacks): a manual tool-use loop over 14 tools. The tools are geocode,
+  search_imagery, detect_ships, detect_objects, detect_change, query_objects,
+  get_tracks, get_track, get_events, next_passes, wayback_history, list_sites,
+  monitor_site and ais_positions. The model plans, starts with cheap queries, runs a
+  detector on the newest clear image, corroborates important claims with a second
+  date or sensor, and stops when the question is answered. A tool-call budget caps
+  the run (default 20).
+- **Offline playbook.** The same tools in a fixed order chosen from keywords in the
+  question, with a templated answer.
+- **Evidence.** Every fact a tool returns is registered as evidence and labelled:
+  - `observation`: one detection in one image, with its chip;
+  - `derived`: an algorithm's output, such as tracks, change regions or events;
+  - `reference`: a catalog, orbital or gazetteer fact.
+
+  The answer has to cite the ids. Afterwards Oracle checks every citation against
+  the registry and flags any it doesn't know as unsupported. Investigations are
+  stored with their full step trace.
+- **Boundary.** Oracle works on places and objects, never people. Questions about
+  following a person, reading licence plates, facial recognition or someone's home
+  are declined before any tool runs, and the model is told the same.
+
 ### AIS: dark-vessel detection
 
 `oracle ais load file.csv` accepts NOAA MarineCadastre (US, free), the Danish Maritime
@@ -246,14 +398,25 @@ exists** is flagged dark.
 - **Licences:** Maxar Open Data is non-commercial. Esri imagery is display-only, with
   attribution. Capella, Umbra and WorldCover are CC BY 4.0. Ultralytics code and weights
   are **AGPL-3.0**.
+- Change classes are spectral rules, not a trained classifier. "New bright surface"
+  can be construction, or a stockpile, or a field after harvest. Always look at the
+  before/after chips. Radar change on slopes and buildings is unreliable if the
+  baseline mixes orbit directions (Oracle notes it when it does).
+- "Likely" passes mean the geometry *allows* an acquisition. Sentinel-1 also depends
+  on ESA's acquisition plan.
+- The agent is only as good as its tools and data. It can pick a poor area: geocoders
+  return city centroids, not anchorages, which is why the playbook searches 25 km for
+  maritime questions. Read the step trace. Claims it can't cite are flagged.
 - **Use it for research, journalism and situational awareness on public data.** It
-  isn't built to follow private individuals: satellite views can't identify people or
-  plates, and don't point it at someone's home.
+  works on places and objects. It isn't built to follow individuals, and the agent
+  declines such questions: satellite views can't identify people or plates, and don't
+  point it at someone's home.
 
 ## Tests
 
 ```
 pip install -e ".[dev]"
-pytest              # 46 offline tests: detectors, tracker, events, AIS, store, API, briefs
+pytest              # 69 offline tests: detectors, tracker, events, AIS, store, API, briefs,
+                    # orbits, STS/unusual-location, change classes, agent loop (mocked Claude), playbook
 pytest -m live      # smoke tests against the real catalogs
 ```
