@@ -9,7 +9,6 @@ __all__ = ["CACHE_DIR", "INDEX_DIR", "USER_AGENT", "HTTP_TIMEOUT", "configure_gd
 
 CACHE_DIR = Path(os.environ.get("ORACLE_CACHE", Path.home() / ".cache" / "oracle"))
 INDEX_DIR = CACHE_DIR / "index"
-WATCH_DIR = CACHE_DIR / "watch"
 
 # Several public endpoints (Esri, Nominatim) reject anonymous library user agents.
 # Identify honestly instead of impersonating a browser.

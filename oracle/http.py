@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import time
 from collections.abc import Callable, Iterable
 from typing import Any
 
@@ -23,11 +24,18 @@ def client() -> httpx.Client:
     )
 
 
-def get_json(url: str, **kw: Any) -> Any:
+RETRY_STATUS = {429, 500, 502, 503, 504}
+
+
+def get_json(url: str, attempts: int = 4, **kw: Any) -> Any:
+    """GET JSON, retrying rate limits and gateway errors with backoff."""
     with client() as c:
-        r = c.get(url, **kw)
-        r.raise_for_status()
-        return r.json()
+        for i in range(attempts):
+            r = c.get(url, **kw)
+            if r.status_code not in RETRY_STATUS or i == attempts - 1:
+                r.raise_for_status()
+                return r.json()
+            time.sleep(min(2**i, 8))
 
 
 def fetch_many_json(

@@ -1,0 +1,312 @@
+"""Web API for the intelligence layer: objects, tracks, events, sites, sweeps, briefs."""
+
+from __future__ import annotations
+
+import functools
+import io
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import Response
+from pydantic import BaseModel
+
+from . import jobs
+from .geo import AOI, parse_aoi
+from .guard import check_scene
+from .imagery import NoData, chip
+from .models import Scene
+from .observations import feature_collection
+from .pipeline import Site, add_preset, process_site, refresh_site, sweep
+from .presets import PRESETS
+from .store import Store
+
+router = APIRouter(prefix="/api")
+
+
+@functools.lru_cache(maxsize=1)
+def store() -> Store:
+    return Store()
+
+
+def _bbox(text: str | None) -> tuple[float, float, float, float] | None:
+    if not text:
+        return None
+    try:
+        w, s, e, n = map(float, text.split(","))
+    except ValueError:
+        raise HTTPException(400, "bbox must be west,south,east,north") from None
+    return (w, s, e, n)
+
+
+def _ago(days: float | None) -> datetime | None:
+    return datetime.now(timezone.utc) - timedelta(days=days) if days else None
+
+
+# --------------------------------------------------------------------------- objects & tracks
+
+
+@router.get("/objects")
+def objects(
+    bbox: str | None = None,
+    site: str | None = None,
+    days: float | None = None,
+    classes: str | None = None,
+    limit: int = Query(20000, le=100000),
+) -> dict:
+    obs = store().observations(
+        bbox=_bbox(bbox), start=_ago(days), site=site, classes=[c for c in (classes or "").split(",") if c], limit=limit
+    )
+    return feature_collection(obs, count=len(obs))
+
+
+@router.get("/tracks")
+def tracks(bbox: str | None = None, site: str | None = None, min_obs: int = 2, status: str | None = None) -> dict:
+    feats = []
+    for t in store().tracks(site=site, status=status, bbox=_bbox(bbox)):
+        if t["n_obs"] < min_obs:
+            continue
+        path = t["attrs"].get("path") or []
+        feats.append(
+            {
+                "type": "Feature",
+                "id": t["id"],
+                "geometry": {"type": "LineString", "coordinates": [[p[0], p[1]] for p in path]},
+                "properties": {k: v for k, v in t.items() if k not in ("attrs",)}
+                | {
+                    "dwell_days": t["attrs"].get("dwell_days"),
+                    "sources": t["attrs"].get("sources"),
+                    "times": [p[2] for p in path],
+                },
+            }
+        )
+    return {"type": "FeatureCollection", "features": feats}
+
+
+@router.get("/track/{track_id}")
+def track(track_id: str) -> dict:
+    t = store().track(track_id)
+    if not t:
+        raise HTTPException(404, "no such track")
+    return t
+
+
+@router.get("/obs/{obs_id}")
+def obs_one(obs_id: str) -> dict:
+    r = store().conn.execute("SELECT * FROM observations WHERE id=?", (obs_id,)).fetchone()
+    if not r:
+        raise HTTPException(404, "no such observation")
+    return store()._row_obs(r).feature()
+
+
+@router.get("/obs/{obs_id}/chip.png")
+def obs_chip(obs_id: str, size_m: float = Query(500, ge=50, le=5000), px: int = Query(256, ge=64, le=1024)) -> Response:
+    row = store().conn.execute("SELECT scene_id, lat, lon FROM observations WHERE id=?", (obs_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "no such observation")
+    return Response(
+        _chip_png(row["scene_id"], row["lat"], row["lon"], size_m, px),
+        media_type="image/png",
+        headers={"Cache-Control": "max-age=86400"},
+    )
+
+
+@functools.lru_cache(maxsize=512)
+def _chip_png(scene_id: str, lat: float, lon: float, size_m: float, px: int) -> bytes:
+    scene = store().scene(scene_id)
+    if scene is None:
+        raise HTTPException(404, "scene not stored")
+    try:
+        c = chip(scene, AOI.from_point(lat, lon, size_m / 2000), max_pixels=px)
+    except NoData as exc:
+        raise HTTPException(404, str(exc)) from None
+    img = c.image(label=False).convert("RGB").resize((px, px))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+# --------------------------------------------------------------------------- events, stats, brief
+
+
+@router.get("/events")
+def events(days: float = 30, site: str | None = None, limit: int = Query(300, le=5000), min_severity: float = 0.0) -> list[dict]:
+    return [e for e in store().events(since=_ago(days), site=site, limit=limit) if e["severity"] >= min_severity]
+
+
+@router.get("/stats")
+def stats() -> dict:
+    return store().stats()
+
+
+@router.get("/brief")
+def brief(days: float = 7, llm: str = "auto", site: str | None = None) -> dict:
+    from .brief import brief as make
+
+    use = {"auto": None, "on": True, "off": False}.get(llm)
+    try:
+        md, engine = make(store(), since=_ago(days), sites=[site] if site else None, use_llm=use)
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from None
+    return {"markdown": md, "engine": engine}
+
+
+# --------------------------------------------------------------------------- sites
+
+
+class SiteBody(BaseModel):
+    name: str
+    where: str | None = None
+    bbox: list[float] | None = None
+    radius_km: float = 5.0
+    kind: str = "maritime"
+
+
+@router.get("/sites")
+def sites() -> list[dict]:
+    st = store()
+    out = []
+    counts = defaultdict(int)
+    for r in st.conn.execute("SELECT site, COUNT(*) n FROM observations GROUP BY site"):
+        counts[r["site"]] = r["n"]
+    ev = defaultdict(float)
+    for e in st.events(since=_ago(30), limit=5000):
+        ev[e["site"]] = max(ev[e["site"]], e["severity"])
+    for s in st.sites():
+        s["observations"] = counts.get(s["name"], 0)
+        s["max_severity_30d"] = ev.get(s["name"], 0.0)
+        out.append(s)
+    return out
+
+
+@router.post("/sites")
+def add_site(body: SiteBody) -> dict:
+    try:
+        bbox = tuple(body.bbox) if body.bbox else parse_aoi(body.where or "", body.radius_km).bbox
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    if len(bbox) != 4:
+        raise HTTPException(400, "bbox must be [w,s,e,n]")
+    Site(body.name, bbox, body.kind).save(store())
+    return {"ok": True, "name": body.name, "bbox": bbox}
+
+
+@router.delete("/sites/{name}")
+def delete_site(name: str) -> dict:
+    return {"deleted": store().delete_site(name)}
+
+
+@router.post("/sites/preset/{preset}")
+def preset(preset: str) -> dict:
+    if preset not in PRESETS:
+        raise HTTPException(404, f"presets: {', '.join(PRESETS)}")
+    return {"added": [s.name for s in add_preset(store(), preset)]}
+
+
+@router.get("/sites/{name}/series")
+def series(name: str) -> dict:
+    """Objects per class per processed image, for activity charts."""
+    st = store()
+    per = defaultdict(lambda: defaultdict(int))
+    for r in st.conn.execute("SELECT scene_id, cls, COUNT(*) n FROM observations WHERE site=? GROUP BY scene_id, cls", (name,)):
+        per[r["scene_id"]][r["cls"]] = r["n"]
+    rows = []
+    for r in st.runs(name):
+        if r["status"] == "ok" and r.get("scene_time"):
+            rows.append(
+                {
+                    "time": r["scene_time"],
+                    "source": r["source"],
+                    "clear": r.get("clear"),
+                    "counts": dict(per.get(r["scene_id"], {})),
+                }
+            )
+    return {"site": name, "series": rows}
+
+
+# --------------------------------------------------------------------------- jobs: sweep & detect
+
+
+class SweepBody(BaseModel):
+    sites: list[str] | None = None
+    lookback_days: int = 30
+    max_scenes: int = 6
+
+
+@router.post("/sweep")
+def start_sweep(body: SweepBody) -> dict:
+    st = store()
+    rows = [r for r in st.sites() if not body.sites or r["name"] in body.sites]
+    if not rows:
+        raise HTTPException(400, "no sites")
+    jid = jobs.submit("sweep", sweep, st, [Site.from_row(r) for r in rows], body.lookback_days, body.max_scenes)
+    return {"job": jid}
+
+
+class DetectBody(BaseModel):
+    scene: dict
+    bbox: list[float]
+    detector: str = "auto"  # ships | objects | auto
+    prompts: list[str] | None = None
+    site: str | None = None
+
+
+@router.post("/detect")
+def start_detect(body: DetectBody) -> dict:
+    scene = Scene.from_dict(body.scene)
+    check_scene(scene)
+    if len(body.bbox) != 4:
+        raise HTTPException(400, "bbox must be [w,s,e,n]")
+    aoi = AOI(tuple(body.bbox))
+    w, h = aoi.size_km()
+    det = body.detector
+    if det == "auto":
+        det = "ships" if (scene.source == "sentinel-2" or scene.sensor == "sar") else "objects"
+    limit = 2500 if det == "ships" else 25
+    if w * h > limit:
+        raise HTTPException(400, f"area too large for {det} in the web app ({w * h:.0f} km2 > {limit}); use the CLI")
+    jid = jobs.submit("detect", _detect, scene, aoi, det, body.prompts, body.site)
+    return {"job": jid}
+
+
+def _detect(scene: Scene, aoi: AOI, det: str, prompts: list[str] | None, site: str | None) -> dict:
+    from .detect import detect_ships
+
+    if det == "ships":
+        obs = detect_ships(scene, aoi).observations()
+    else:
+        from .objdet import detect_objects
+
+        obs = detect_objects(scene, aoi, prompts=prompts)
+    st = store()
+    site_name = site or f"adhoc {scene.date} {aoi.center[0]:.3f},{aoi.center[1]:.3f}"
+    if not any(s["name"] == site_name for s in st.sites()):
+        Site(site_name, aoi.bbox, "maritime" if det == "ships" else "ground").save(st)
+    st.add_scene(scene)
+    n = st.add_observations(obs, site_name)
+    st.record_run(site_name, scene.id, det, n)
+    refresh_site(st, Site.from_row(next(s for s in st.sites() if s["name"] == site_name)))
+    return feature_collection(st.observations(site=site_name, bbox=aoi.bbox), site=site_name, scene=scene.id, detector=det)
+
+
+@router.post("/sites/{name}/process")
+def process_one(name: str, lookback_days: int = 30, max_scenes: int = 6) -> dict:
+    st = store()
+    row = next((s for s in st.sites() if s["name"] == name), None)
+    if not row:
+        raise HTTPException(404, "no such site")
+    since = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+    return {"job": jobs.submit("process", process_site, st, Site.from_row(row), since, None, max_scenes)}
+
+
+@router.get("/jobs/{jid}")
+def job(jid: str) -> dict:
+    j = jobs.get(jid)
+    if not j:
+        raise HTTPException(404, "no such job")
+    return j
+
+
+@router.get("/jobs")
+def job_list() -> list[dict]:
+    return jobs.all_jobs()

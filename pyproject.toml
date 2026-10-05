@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oracle-osint"
-version = "0.1.0"
-description = "Free, high-resolution satellite imagery search, viewing and vessel detection for any point on Earth"
+version = "0.2.0"
+description = "Free satellite OSINT: multi-archive imagery search, YOLO/ship detection, cross-date tracking, events and briefs"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -22,7 +22,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.5"]
+ai = ["ultralytics>=8.3"]            # YOLO object detection (pulls torch; Ultralytics is AGPL-3.0)
+llm = ["anthropic>=1.0"]             # Claude-written briefs
+all = ["ultralytics>=8.3", "anthropic>=1.0"]
+dev = ["pytest>=8", "ruff>=0.5", "anthropic>=1.0"]
 
 [project.scripts]
 oracle = "oracle.cli:main"

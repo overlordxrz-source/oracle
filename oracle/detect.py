@@ -28,11 +28,14 @@ from pyproj import Transformer
 from rasterio.enums import Resampling
 from scipy import ndimage
 
+from . import velocity
 from .geo import AOI
 from .imagery import Grid, NoData, _font, chip, draw_caption, read_href, read_render, to_db
 from .models import Scene
+from .observations import VESSEL, Observation
 
 LARGE_M = 250.0  # carrier / VLCC / ULCV class
+MAX_HULL_M = 520.0  # the largest ships afloat are ~400 m; allow for wake / side-lobe inflation
 MEDIUM_M = (100.0, 220.0)  # destroyer / frigate / cruiser / supply ship class
 
 
@@ -54,6 +57,10 @@ class Detection:
     # RMS distance (m) of the blob's spine from a straight line. Hulls with or without
     # wake stay within ~2-5 m (pixel staircasing); cloud streaks wander 7-25 m.
     wiggle_m: float = 0.0
+    # Sentinel-2 wake analysis (velocity.py): underway flag, course (None = unknown), wake length.
+    underway: bool | None = None
+    course_deg: float | None = None
+    wake_m: float | None = None
 
     @property
     def size_class(self) -> str:
@@ -78,6 +85,7 @@ class DetectionResult:
     grid: Grid
     detections: list[Detection]
     warnings: list[str] = field(default_factory=list)
+    clear_fraction: float = 1.0  # share of the AOI imaged without cloud (radar: always 1)
 
     def geojson(self) -> dict:
         return {
@@ -133,6 +141,41 @@ class DetectionResult:
             dd.text((4, cell - 18), f"{det.length_m:.0f} m  {det.lat:.4f},{det.lon:.4f}", fill=(255, 255, 255), font=font)
             sheet.paste(tile, ((i % cols) * cell, (i // cols) * cell))
         return sheet
+
+    def observations(self) -> list[Observation]:
+        """Detections as store-ready Observations (class ``vessel``)."""
+        out = []
+        for d in self.detections:
+            attrs = {
+                "gsd": round(self.grid.res, 2),
+                "contrast": d.contrast,
+                "width_m": d.width_m,
+                "near_shore": d.near_shore,
+                "nearby_medium_vessels": d.nearby_medium_vessels,
+                "wiggle_m": d.wiggle_m,
+            }
+            if d.excess:
+                attrs["excess"] = d.excess
+            if d.underway is not None:
+                attrs.update(underway=d.underway, wake_m=d.wake_m)
+            out.append(
+                Observation(
+                    cls=VESSEL,
+                    lat=d.lat,
+                    lon=d.lon,
+                    time=self.scene.datetime,
+                    scene_id=self.scene.id,
+                    source=self.scene.source,
+                    detector="ships-" + ("s2" if self.scene.source == "sentinel-2" else "sar"),
+                    confidence=round(min(1.0, d.contrast / 30), 3),
+                    length_m=d.length_m,
+                    width_m=d.width_m,
+                    axis_deg=d.heading_deg,
+                    course_deg=d.course_deg,
+                    attrs=attrs,
+                )
+            )
+        return out
 
     def save(self, out_dir: str | Path, stem: str | None = None) -> dict[str, Path]:
         import json
@@ -197,6 +240,7 @@ def _detect_s2(scene: Scene, aoi: AOI, *, k: float, min_length: float, block: in
     offset = scene.extra.get("reflectance_offset", 0.0)
     dets: list[Detection] = []
     pad = 64
+    valid_px = cloud_px = 0
     for r0 in range(0, full.height, block):
         for c0 in range(0, full.width, block):
             g = _subgrid(full, c0 - pad, r0 - pad, block + 2 * pad, block + 2 * pad)
@@ -208,6 +252,9 @@ def _detect_s2(scene: Scene, aoi: AOI, *, k: float, min_length: float, block: in
             blue = read_href(bands["blue"], g, [1])[0] * scale + offset if "blue" in bands else None
             scl = read_href(bands["scl"], g, [1], Resampling.nearest)[0] if "scl" in bands else None
             sea, cloud, land = _s2_masks(nir, green, red, scl)
+            inner = (slice(pad if r0 else 0, None), slice(pad if c0 else 0, None))
+            valid_px += int(np.isfinite(nir[inner]).sum())
+            cloud_px += int((cloud[inner] & np.isfinite(nir[inner])).sum())
             found = _find_targets(
                 nir,
                 sea,
@@ -219,7 +266,7 @@ def _detect_s2(scene: Scene, aoi: AOI, *, k: float, min_length: float, block: in
                 sigma_m=400.0,
                 min_area_m2=200.0,
                 shore_buffer_px=5,
-                aux={name: a for name, a in (("blue", blue), ("red", red), ("nir", nir)) if a is not None},
+                aux={n: a for n, a in (("blue", blue), ("green", green), ("red", red), ("nir", nir)) if a is not None},
             )
             found = [d for d in found if _hull_like(d)]
             core = (c0, r0, c0 + block, r0 + block)
@@ -227,7 +274,9 @@ def _detect_s2(scene: Scene, aoi: AOI, *, k: float, min_length: float, block: in
                 col, row = ~full.transform @ (det.x, det.y)
                 if core[0] <= col < core[2] and core[1] <= row < core[3]:
                     dets.append(det)
-    return _finish(scene, aoi, full, dets, min_length, notes)
+    res = _finish(scene, aoi, full, dets, min_length, notes)
+    res.clear_fraction = round(1 - cloud_px / valid_px, 3) if valid_px else 0.0
+    return res
 
 
 def _hull_like(d: Detection) -> bool:
@@ -305,21 +354,15 @@ def _detect_sar(scene: Scene, aoi: AOI, *, k: float, min_length: float) -> Detec
     if not valid.any():
         raise NoData("no SAR pixels in AOI")
     notes: list[str] = []
-    f = max(1, int(round(120.0 / grid.res)))
-    coarse = _block_nanmedian(db, f)
-    vals = coarse[np.isfinite(coarse)]
-    thr, sep = _otsu(vals)
-    if sep < 5.0:
-        if scene.source == "sentinel-1":
-            thr = -14.0  # calibrated VV: open water sits well below this
-        else:
-            thr = np.inf
-            notes.append("no clear land/water contrast; treating the whole AOI as water (expect land clutter)")
-    water_c = np.nan_to_num(coarse, nan=np.inf) < thr
-    water_c = ndimage.binary_opening(water_c, iterations=1)
-    water = np.repeat(np.repeat(water_c, f, axis=0), f, axis=1)
-    water = np.pad(water, ((0, max(0, db.shape[0] - water.shape[0])), (0, max(0, db.shape[1] - water.shape[1]))))
-    water = water[: db.shape[0], : db.shape[1]] & valid
+    from .landmask import water_mask
+
+    static = water_mask(grid)
+    if static is not None:
+        # WorldCover: robust even when wind roughens the sea to land-like brightness.
+        water = ndimage.binary_erosion(static, iterations=2) & valid
+    else:
+        notes.append("WorldCover land mask unavailable; using backscatter threshold")
+        water = _sar_water_by_threshold(db, valid, grid, scene, notes)
     max_hole = int(60_000 / grid.res**2)  # ships plus their bright sidelobes / wake
     sea = _fill_small_holes(water, max_hole_px=max_hole) & valid
     land = valid & ~sea
@@ -336,6 +379,23 @@ def _detect_sar(scene: Scene, aoi: AOI, *, k: float, min_length: float) -> Detec
         min_area_m2=max(80.0, 2 * grid.res**2),
     )
     return _finish(scene, aoi, grid, dets, min_length, notes)
+
+
+def _sar_water_by_threshold(db: np.ndarray, valid: np.ndarray, grid: Grid, scene: Scene, notes: list[str]) -> np.ndarray:
+    """Fallback land/water split: Otsu on a coarse median of the backscatter."""
+    f = max(1, int(round(120.0 / grid.res)))
+    coarse = _block_nanmedian(db, f)
+    thr, sep = _otsu(coarse[np.isfinite(coarse)])
+    if sep < 5.0:
+        if scene.source == "sentinel-1":
+            thr = -14.0  # calibrated VV: calm open water sits well below this
+        else:
+            thr = np.inf
+            notes.append("no clear land/water contrast; treating the whole AOI as water (expect land clutter)")
+    water_c = ndimage.binary_opening(np.nan_to_num(coarse, nan=np.inf) < thr, iterations=1)
+    water = np.repeat(np.repeat(water_c, f, axis=0), f, axis=1)
+    water = np.pad(water, ((0, max(0, db.shape[0] - water.shape[0])), (0, max(0, db.shape[1] - water.shape[1]))))
+    return water[: db.shape[0], : db.shape[1]] & valid
 
 
 def _block_nanmedian(a: np.ndarray, f: int) -> np.ndarray:
@@ -466,6 +526,7 @@ def _find_targets(
                 near_shore=bool(near_land[sl][blob].any()),
                 excess=_ring_excess(aux, lab, i, sl, sea) if aux else None,
                 wiggle_m=round(wiggle, 1),
+                **(_wake(aux, lab, i, sl, sea, res, heading, length, width) if aux and length >= 30 else {}),
             )
         )
     return out
@@ -485,6 +546,30 @@ def _wiggle_m(xs: np.ndarray, ys: np.ndarray, vx: float, vy: float, res: float) 
     return float(np.sqrt(np.mean(centers**2)))
 
 
+def _wake(aux: dict[str, np.ndarray], lab, i: int, sl: tuple, sea, res: float, axis: float, length: float, width: float) -> dict:
+    if "blue" not in aux or "nir" not in aux:
+        return {}
+    pad = int(math.ceil(3.5 * length / res)) + 4
+    r0, c0 = max(sl[0].start - pad, 0), max(sl[1].start - pad, 0)
+    win = (slice(r0, sl[0].stop + pad), slice(c0, sl[1].stop + pad))
+    blob = lab[win] == i
+    others = (lab[win] > 0) & ~blob
+    background = sea[win] & ~ndimage.binary_dilation(lab[win] > 0, iterations=3)
+    w = velocity.wake_motion(
+        np.where(others, np.nan, aux["blue"][win]),
+        np.where(others, np.nan, aux["nir"][win]),
+        blob,
+        background,
+        axis,
+        length,
+        width,
+        res,
+    )
+    if w is None:
+        return {}
+    return {"underway": w.underway, "course_deg": w.course_deg, "wake_m": w.wake_m}
+
+
 def _ring_excess(aux: dict[str, np.ndarray], lab: np.ndarray, i: int, sl: tuple, sea: np.ndarray) -> dict[str, float]:
     """Blob mean minus the median of a thin ring of water around it, per band."""
     pad = 6
@@ -501,7 +586,10 @@ def _ring_excess(aux: dict[str, np.ndarray], lab: np.ndarray, i: int, sl: tuple,
 
 
 def _finish(scene: Scene, aoi: AOI, grid: Grid, dets: list[Detection], min_length: float, notes: list[str]) -> DetectionResult:
-    dets = [d for d in dets if d.length_m >= min_length]
+    too_big = [d for d in dets if d.length_m > MAX_HULL_M]
+    if too_big:
+        notes.append(f"dropped {len(too_big)} blobs longer than {MAX_HULL_M:.0f} m (structures, merged ships, clutter)")
+    dets = [d for d in dets if min_length <= d.length_m <= MAX_HULL_M]
     if len(dets) > 3000:
         notes.append(f"{len(dets)} detections: likely clutter (land, sea state, ice); raise --k or shrink the AOI")
     _tag_task_groups(dets)

@@ -10,15 +10,16 @@ import tempfile
 import zlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel
 
 from . import __version__
+from .api_intel import router as intel_router
 from .detect import detect_ships
 from .geo import AOI, geocode, parse_aoi
+from .guard import check_href, check_scene
 from .imagery import NoData, chip, render_tile, transparent_png
 from .models import Render, Scene, parse_dt
 from .search import search
@@ -27,39 +28,11 @@ from .sources.wayback import versions as wayback_versions
 
 WEB = Path(__file__).parent / "web"
 
-# The tile/chip endpoints read whatever hrefs a spec names, so only the public data
-# buckets Oracle's sources actually use are allowed (no SSRF into your network).
-ALLOWED_HOSTS = {
-    "e84-earth-search-sentinel-data.s3.us-west-2.amazonaws.com",
-    "sentinel-cogs.s3.us-west-2.amazonaws.com",
-    "maxar-opendata.s3.amazonaws.com",
-    "maxar-opendata.s3.us-west-2.amazonaws.com",
-    "capella-open-data.s3.amazonaws.com",
-    "capella-open-data.s3.us-west-2.amazonaws.com",
-    "umbra-open-data-catalog.s3.us-west-2.amazonaws.com",
-    "umbra-open-data-catalog.s3.amazonaws.com",
-}
-ALLOWED_SUFFIXES = (".blob.core.windows.net",)  # Planetary Computer storage accounts
-
 app = FastAPI(title="Oracle", version=__version__)
+app.include_router(intel_router)
 
 
 # --------------------------------------------------------------------------- helpers
-
-
-def _check_href(href: str) -> None:
-    u = urlparse(href)
-    host = (u.hostname or "").lower()
-    if u.scheme != "https" or not (host in ALLOWED_HOSTS or host.endswith(ALLOWED_SUFFIXES)):
-        raise HTTPException(400, f"host not allowed: {host or href}")
-
-
-def _check_scene(scene: Scene) -> None:
-    for h in scene.render.hrefs:
-        if scene.render.kind != "xyz":
-            _check_href(h)
-    for h in (scene.extra.get("bands") or {}).values():
-        _check_href(h)
 
 
 def encode_spec(render: Render) -> str:
@@ -77,7 +50,7 @@ def decode_spec(spec: str) -> Render:
     if render.kind == "xyz":
         raise HTTPException(400, "xyz layers are served by their provider")
     for h in render.hrefs:
-        _check_href(h)
+        check_href(h)
     return render
 
 
@@ -187,7 +160,7 @@ def _scene_and_aoi(body: SceneBody) -> tuple[Scene, AOI]:
     if len(body.bbox) != 4:
         raise HTTPException(400, "bbox must be [west, south, east, north]")
     scene = Scene.from_dict(body.scene)
-    _check_scene(scene)
+    check_scene(scene)
     aoi = AOI(tuple(body.bbox))
     w, h = aoi.size_km()
     if w * h > 2500:

@@ -202,31 +202,6 @@ def cmd_index(args) -> None:
         print(f"{k:<8} {len(i.records()):>6} scenes  ({i.age_days():.1f} days old)  {i.path}")
 
 
-def cmd_watch(args) -> None:
-    from . import watch
-
-    if args.action == "add":
-        if not args.where:
-            sys.exit("usage: oracle watch add NAME WHERE")
-        aoi = parse_aoi(args.where, args.radius)
-        site = watch.Site(args.name, aoi.bbox, ships=args.ships, max_cloud=args.max_cloud, min_length=args.min_length)
-        if args.sources:
-            site.sources = _sources(args)
-        watch.add(site)
-        print(f"watching {site.name}: {aoi.bbox} via {', '.join(site.sources)}{' + ship detection' if site.ships else ''}")
-    elif args.action == "list":
-        for s in watch.sites():
-            print(f"{s.name:<20} {', '.join(f'{v:.4f}' for v in s.bbox)}  {','.join(s.sources)}  ships={s.ships}")
-    elif args.action == "rm":
-        print("removed" if watch.remove(args.name) else "no such site")
-    elif args.action == "run":
-        if args.loop:
-            watch.run_forever(args.loop, args.lookback, args.webhook)
-        else:
-            evs = watch.run_once(args.lookback, args.webhook)
-            print(f"{len(evs)} new scene(s)")
-
-
 def cmd_serve(args) -> None:
     from .server import run
 
@@ -313,19 +288,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--refresh", action="store_true")
     sp.set_defaults(fn=cmd_index)
 
-    sp = sub.add_parser("watch", help="watchlist: alert on new imagery of your sites")
-    sp.add_argument("action", choices=("add", "list", "rm", "run"))
-    sp.add_argument("name", nargs="?")
-    sp.add_argument("where", nargs="?")
-    sp.add_argument("-r", "--radius", type=float, default=3.0)
-    sp.add_argument("-s", "--sources")
-    sp.add_argument("--max-cloud", type=float, default=40)
-    sp.add_argument("--ships", action="store_true", help="run vessel detection on new images")
-    sp.add_argument("--min-length", type=float, default=50)
-    sp.add_argument("--loop", type=int, help="re-run every N seconds")
-    sp.add_argument("--lookback", type=int, default=14, help="days to look back each run")
-    sp.add_argument("--webhook", help="POST alerts here (or set ORACLE_WEBHOOK)")
-    sp.set_defaults(fn=cmd_watch)
+    from .cli_intel import register
+
+    register(sub)
 
     sp = sub.add_parser("serve", help="start the map web app")
     sp.add_argument("--host", default="127.0.0.1")

@@ -168,3 +168,10 @@ def test_pick_frames_least_cloudy_per_period():
     c = scene(cloud=20, dt=datetime(2026, 2, 2, tzinfo=timezone.utc))
     partial = scene(cloud=0, dt=datetime(2026, 2, 9, tzinfo=timezone.utc), cov=0.4)
     assert pick_frames([a, b, c, partial], "month") == [b, c]
+
+
+def test_worldcover_tile_names():
+    from oracle.landmask import tile_names
+
+    assert tile_names((56.25, 26.39, 56.65, 26.75)) == ["N24E054"]
+    assert tile_names((-0.5, -0.5, 0.5, 0.5)) == ["S03W003", "S03E000", "N00W003", "N00E000"]
