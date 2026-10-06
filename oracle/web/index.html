@@ -256,6 +256,7 @@ input[type=range] { width: 100%; accent-color: #fff; height: 16px; }
   <button data-mode="ask" class="on"><i></i>Ask</button>
   <button data-mode="imagery"><i></i>Imagery</button>
   <button data-mode="change"><i></i>Change</button>
+  <button data-mode="discover"><i></i>Discover</button>
   <button data-mode="objects"><i></i>Objects</button>
   <button data-mode="tracks"><i></i>Tracks</button>
   <button data-mode="sites"><i></i>Sites</button>
@@ -310,6 +311,28 @@ input[type=range] { width: 100%; accent-color: #fff; height: 16px; }
       <div id="cctl" style="display:none;margin-top:10px"><span class="cap">Overlay opacity</span><input id="copac" type="range" min="0" max="1" step="0.05" value="0.85"></div>
     </div>
     <div class="scroll" id="clist"><div class="empty">Select an area (click the map or use the command bar), then run.</div></div>
+  </section>
+
+  <!-- DISCOVER -->
+  <section class="mode" data-mode="discover">
+    <div class="hd"><button class="x" data-close aria-label="Hide panel">×</button><h2>Discover</h2><p>Planetary search on AlphaEarth Foundations embeddings (Google DeepMind): one learned vector per 10 m pixel per year.</p></div>
+    <div class="sec">
+      <div class="seg" id="dkind"><button data-v="similar" class="on">Find similar</button><button data-v="change">Long-term change</button><button data-v="view">Embedding map</button></div>
+      <div id="dsim" style="margin-top:12px">
+        <div class="row"><button class="btn" id="dpick">Pick examples on map</button><button class="btn" id="dclear" style="flex:0 0 auto">Clear</button></div>
+        <div class="status" id="dex">Click “Pick examples”, then click one or more places that look like what you want to find.</div>
+      </div>
+      <div class="row">
+        <div id="dfromw" style="display:none"><label class="l cap" for="dfrom">From</label><select id="dfrom" class="in"></select></div>
+        <div><label class="l cap" for="dyear">Year</label><select id="dyear" class="in"></select></div>
+        <div><label class="l cap" for="drad">Radius km</label><input id="drad" class="in" type="number" value="20" min="1" max="50" step="1"></div>
+      </div>
+      <label class="src" id="dsegw" style="display:none;margin-top:10px"><input type="checkbox" id="dseg"><span>k-means segments instead of PCA colours</span></label>
+      <button class="btn pri full" id="drun">Search</button>
+      <div class="status" id="dstatus"></div>
+      <div id="dctl" style="display:none;margin-top:10px"><span class="cap">Overlay opacity</span><input id="dopac" type="range" min="0" max="1" step="0.05" value="0.85"></div>
+    </div>
+    <div class="scroll" id="dlist"><div class="empty">Embeddings capture what a place <i>is</i> (a refinery, a solar farm, an airfield, a new town), summarised over a year of optical, radar and terrain data. Similar places get similar vectors.</div></div>
   </section>
 
   <!-- OBJECTS -->
@@ -425,7 +448,8 @@ function status(sel, html, err = false) { $(sel).innerHTML = html; $(sel).classL
 
 // ------------------------------------------------------------------ state
 const S = { days: 30, aoi: null, scenes: [], cur: -1, prev: -1, classes: new Set(["vessel", "aircraft", "vehicle", "other"]), minconf: 0.3, mode: "ask",
-  blink: null, play: null, objects: null, inv: null, invPoll: null, engine: "auto", bengine: "auto", csrc: "sentinel-2", cbase: "recent", change: null };
+  blink: null, play: null, objects: null, inv: null, invPoll: null, engine: "auto", bengine: "auto", csrc: "sentinel-2", cbase: "recent", change: null,
+  dkind: "similar", examples: [], picking: false, disc: null };
 
 // ------------------------------------------------------------------ map
 const DIM = { "raster-brightness-max": 0.62, "raster-saturation": -0.45, "raster-contrast": 0.08 };
@@ -477,21 +501,34 @@ map.on("load", () => {
     paint: { "circle-color": colorExpr, "circle-opacity": ["interpolate", ["linear"], ["zoom"], 10, 0.9, 13, 0.1], "circle-radius": ringR, "circle-stroke-color": colorExpr, "circle-stroke-width": 1.6 } });
   map.addLayer({ id: "objects-sel", type: "circle", source: "objects", filter: ["==", ["get", "oid"], ""],
     paint: { "circle-color": "rgba(0,0,0,0)", "circle-stroke-color": "#ffffff", "circle-stroke-width": 2, "circle-radius": 16 } });
+  map.addSource("disc", { type: "geojson", data: FC() });
+  map.addLayer({ id: "disc", type: "circle", source: "disc", paint: { "circle-radius": ["interpolate", ["linear"], ["zoom"], 6, 4, 14, 9], "circle-color": "rgba(0,0,0,0)", "circle-stroke-color": "#ffffff", "circle-stroke-width": ["interpolate", ["linear"], ["get", "score"], 0.5, 0.8, 1, 2.2], "circle-stroke-opacity": 0.9 } });
+  map.addSource("examples", { type: "geojson", data: FC() });
+  map.addLayer({ id: "examples", type: "circle", source: "examples", paint: { "circle-radius": 7, "circle-color": "#ffffff", "circle-stroke-color": "#000", "circle-stroke-width": 2 } });
+  map.addSource("air", { type: "geojson", data: FC() });
+  map.addLayer({ id: "air-vec", type: "line", source: "air", filter: ["==", ["geometry-type"], "LineString"], layout: { "line-cap": "round" }, paint: { "line-color": css("--c-aircraft"), "line-width": 2.2 } });
+  map.addLayer({ id: "air-pt", type: "circle", source: "air", filter: ["==", ["geometry-type"], "Point"], paint: { "circle-radius": 5, "circle-color": css("--c-aircraft"), "circle-stroke-color": "#000", "circle-stroke-width": 1.5 } });
   map.addSource("evidence", { type: "geojson", data: FC() });
   map.addLayer({ id: "evidence", type: "circle", source: "evidence", paint: { "circle-radius": 6, "circle-color": "rgba(0,0,0,0)", "circle-stroke-color": "#ffffff", "circle-stroke-width": 1.5 } });
   map.addLayer({ id: "evidence-label", type: "symbol", source: "evidence", layout: { "text-field": ["get", "id"], "text-font": ["Open Sans Semibold"], "text-size": 10, "text-offset": [0, -1.4], "text-allow-overlap": false }, paint: { "text-color": "#ffffff", "text-halo-color": "#000", "text-halo-width": 1.2 } });
   map.addLayer({ id: "evidence-sel", type: "circle", source: "evidence", filter: ["==", ["get", "id"], ""], paint: { "circle-radius": 11, "circle-color": "rgba(255,255,255,.12)", "circle-stroke-color": "#ffffff", "circle-stroke-width": 2 } });
 
-  for (const id of ["objects", "clusters", "tracks", "sites-fill", "change-hit", "evidence"]) {
+  for (const id of ["objects", "clusters", "tracks", "sites-fill", "change-hit", "evidence", "disc", "air-pt"]) {
     map.on("mouseenter", id, () => (map.getCanvas().style.cursor = "pointer"));
     map.on("mouseleave", id, () => (map.getCanvas().style.cursor = ""));
   }
   map.on("click", "clusters", (e) => { e.originalEvent._h = 1; const f = e.features[0]; map.getSource("objects").getClusterExpansionZoom(f.properties.cluster_id).then((z) => map.easeTo({ center: f.geometry.coordinates, zoom: z })); });
   map.on("click", "evidence", (e) => { e.originalEvent._h = 1; showEvidence(e.features[0].properties.id); });
+  map.on("click", "disc", (e) => { if (e.originalEvent._h) return; e.originalEvent._h = 1; inspectMatch(+e.features[0].properties.i); });
+  map.on("click", "air-pt", (e) => { if (e.originalEvent._h) return; e.originalEvent._h = 1; inspectAircraft(+e.features[0].properties.i); });
   map.on("click", "objects", (e) => { if (e.originalEvent._h) return; e.originalEvent._h = 1; inspectObject(e.features[0].properties.oid); });
   map.on("click", "change-hit", (e) => { if (e.originalEvent._h) return; e.originalEvent._h = 1; inspectRegion(e.features[0].id ?? e.features[0].properties.rid); });
   map.on("click", "tracks", (e) => { if (e.originalEvent._h) return; e.originalEvent._h = 1; inspectTrack(e.features[0].properties.id); });
-  map.on("click", (e) => { if (e.originalEvent._h) return; if (["imagery", "change", "ask", "sites"].includes(S.mode)) setAoiFromPoint(e.lngLat.lat, e.lngLat.lng); });
+  map.on("click", (e) => {
+    if (e.originalEvent._h) return;
+    if (S.mode === "discover" && S.picking && S.dkind === "similar") return addExample(e.lngLat.lat, e.lngLat.lng);
+    if (["imagery", "change", "ask", "sites", "discover"].includes(S.mode)) setAoiFromPoint(e.lngLat.lat, e.lngLat.lng);
+  });
   const hover = new maplibregl.Popup({ closeButton: false, closeOnClick: false, offset: 10 });
   map.on("mousemove", "objects", (e) => { const p = e.features[0].properties; hover.setLngLat(e.lngLat).setHTML(`${esc(p.cls)} · ${fmtLen(p.length_m)} · ${esc(day(p.time))} · ${esc(p.source)}`).addTo(map); });
   map.on("mouseleave", "objects", () => hover.remove());
@@ -522,6 +559,7 @@ function setMode(m, toggle = false) {
 function segInit(sel, key, cb) {
   $$(sel + " button").forEach((b) => (b.onclick = () => { $$(sel + " button").forEach((x) => x.classList.toggle("on", x === b)); S[key] = b.dataset.v ?? +b.dataset.d; cb && cb(); }));
 }
+segInit("#dkind", "dkind", () => discoverMode());
 segInit("#engine", "engine"); segInit("#bengine", "bengine"); segInit("#csrc", "csrc"); segInit("#cbase", "cbase");
 segInit("#days", "days", () => refreshAll());
 $$("#layers .tg").forEach((c) => (c.onclick = () => {
@@ -556,7 +594,8 @@ const EXAMPLES = [
   "What changed at Palm Jebel Ali in the last month?",
   "Are large ships waiting off Fujairah, and how many?",
   "When will Sentinel-2 next image the Strait of Hormuz?",
-  "Any new construction at 25.0, 55.0?",
+  "Find other oil tank farms like the one at 25.2055, 56.3565 near Fujairah",
+  "Any planes in flight near Dubai International?",
 ];
 function updateHint() {
   const v = $("#q").value.trim();
@@ -691,12 +730,13 @@ function showEvidence(id) {
   const imgs = L.before && L.after
     ? `<div class="pair"><figure><img src="${esc(L.before)}" alt="before"><figcaption class="cap">before (baseline)</figcaption></figure><figure><img src="${esc(L.after)}" alt="after"><figcaption class="cap">after</figcaption></figure></div>`
     : L.chip ? `<div class="bigchip" style="background-image:url('${esc(L.chip)}?px=512')"></div>` : L.overlay ? `<div class="bigchip" style="background-image:url('${esc(L.overlay)}')"></div>` : "";
-  const kindNote = { observation: "a direct measurement in one image", derived: "an algorithm's output over observations", reference: "catalog / orbital / gazetteer fact" }[e.kind];
+  const kindNote = { observation: "a direct measurement in one image", derived: "an algorithm's output over observations", reference: "catalog / orbital / gazetteer fact", report: "open-source reporting found by web search" }[e.kind];
   openInspector(`<span class="mono">${esc(id)}</span> · ${esc(e.tool)}`, `${imgs}
     <p style="margin:0 0 14px;color:var(--text)">${esc(e.summary)}</p>
     <dl class="kv"><dt>kind</dt><dd>${esc(e.kind)} <span style="color:var(--muted)">(${esc(kindNote)})</span></dd>${e.time ? `<dt>time</dt><dd>${esc(hm(e.time))}Z</dd>` : ""}${e.lat != null ? `<dt>position</dt><dd>${(+e.lat).toFixed(5)}, ${(+e.lon).toFixed(5)}</dd>` : ""}
     ${Object.entries(e.data || {}).filter(([k]) => !["kind", "bbox"].includes(k)).slice(0, 8).map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(typeof v === "object" ? JSON.stringify(v) : v)}</dd>`).join("")}</dl>
-    ${e.data?.obs_id ? `<button class="btn sm" style="margin-top:14px" id="evobj">Open object</button>` : ""}`);
+    ${e.data?.obs_id ? `<button class="btn sm" style="margin-top:14px" id="evobj">Open object</button>` : ""}
+    ${L.url ? `<a class="btn sm" style="margin-top:14px;display:inline-block;line-height:24px;text-decoration:none" target="_blank" rel="noopener" href="${esc(L.url)}">Open source ↗</a>` : ""}`);
   $("#evobj")?.addEventListener("click", () => inspectObject(e.data.obs_id));
 }
 
@@ -745,7 +785,7 @@ function renderResults() {
     return `<div class="item ${i === S.cur ? "sel" : ""}" data-i="${i}"><div class="thumbrow"><div class="thumb" ${thumb}>${thumb ? "" : s.sensor === "sar" ? "SAR" : "EO"}</div><div style="min-width:0">
       <div class="t"><span class="tag">${esc(s.source)}</span><b>${esc(day(s.datetime))}</b><span class="r">${fmtGsd(s.gsd)}</span></div>
       <div class="m">${esc(s.platform)}${cloud}${cov}${ctx ? " · " + esc(ctx) : ""}</div>
-      <div class="acts">${canDetect ? `<button class="btn sm" data-a="detect">${s.source === "sentinel-2" || s.sensor === "sar" ? "Find ships" : "Detect objects"}</button>` : ""}${s.spec ? `<button class="btn sm" data-a="png">PNG</button><button class="btn sm" data-a="tif">GeoTIFF</button>` : ""}${s.item_url ? `<a class="btn sm" style="text-decoration:none;line-height:24px" target="_blank" rel="noopener" href="${esc(s.item_url)}">Source ↗</a>` : ""}</div>
+      <div class="acts">${canDetect ? `<button class="btn sm" data-a="detect">${s.source === "sentinel-2" || s.sensor === "sar" ? "Find ships" : "Detect objects"}</button>` : ""}${s.source === "sentinel-2" && s.spec ? `<button class="btn sm" data-a="enhance" title="AI super-resolution to 2.5 m (SEN2SR) - for viewing, not evidence">Enhance ×4</button><button class="btn sm" data-a="air" title="aircraft in flight, from the band timing">Planes in flight</button>` : ""}${s.spec ? `<button class="btn sm" data-a="png">PNG</button><button class="btn sm" data-a="tif">GeoTIFF</button>` : ""}${s.item_url ? `<a class="btn sm" style="text-decoration:none;line-height:24px" target="_blank" rel="noopener" href="${esc(s.item_url)}">Source ↗</a>` : ""}</div>
     </div></div></div>`;
   }).join("");
 }
@@ -753,6 +793,8 @@ $("#results").onclick = (e) => {
   const card = e.target.closest(".item"); if (!card) return;
   const i = +card.dataset.i, a = e.target.closest("[data-a]")?.dataset.a;
   if (a === "detect") return detectScene(S.scenes[i]);
+  if (a === "enhance") return enhanceScene(S.scenes[i]);
+  if (a === "air") return airborneScene(S.scenes[i]);
   if (a === "png" || a === "tif") return download(S.scenes[i], a);
   viewScene(i);
 };
@@ -777,8 +819,8 @@ function viewScene(i, keepPrev = false) {
   renderTimeline();
   if (S.aoi && !map.getBounds().contains([(S.aoi[0] + S.aoi[2]) / 2, lat])) map.fitBounds([[S.aoi[0], S.aoi[1]], [S.aoi[2], S.aoi[3]]], { padding: 60 });
 }
-$("#opacity").oninput = (e) => map.getLayer("scene") && map.setPaintProperty("scene", "raster-opacity", +e.target.value);
-$("#hideov").onclick = () => { stopBlink(); if (map.getLayer("scene")) map.removeLayer("scene"); if (map.getSource("scene")) map.removeSource("scene"); $("#hud").style.display = "none"; S.cur = -1; renderTimeline(); };
+$("#opacity").oninput = (e) => ["scene", "sr"].forEach((id) => map.getLayer(id) && map.setPaintProperty(id, "raster-opacity", +e.target.value));
+$("#hideov").onclick = () => { stopBlink(); if (map.getLayer("sr")) map.removeLayer("sr"); if (map.getSource("sr")) map.removeSource("sr"); if (map.getLayer("scene")) map.removeLayer("scene"); if (map.getSource("scene")) map.removeSource("scene"); $("#hud").style.display = "none"; S.cur = -1; renderTimeline(); };
 function stopBlink() { if (S.blink) { clearInterval(S.blink); S.blink = null; $("#blink").textContent = "Blink (B)"; } }
 $("#blink").onclick = toggleBlink;
 function toggleBlink() {
@@ -899,6 +941,129 @@ function inspectRegion(i, fly = false) {
      <p style="margin:0 0 14px;color:var(--text-2)">${esc(q.meaning)}</p>
      <dl class="kv"><dt>area</dt><dd>${(q.area_m2 / 1e4).toFixed(2)} ha</dd><dt>confidence</dt><dd>${pct(q.confidence)} (score ${q.score})</dd><dt>position</dt><dd>${q.lat}, ${q.lon}</dd>
      ${Object.entries(q.values || {}).map(([m, v]) => `<dt>${esc(m)}</dt><dd>${v[0]} → ${v[1]}</dd>`).join("")}</dl>`);
+}
+
+// ------------------------------------------------------------------ discover (AlphaEarth embeddings)
+const YEARS = [2025, 2024, 2023, 2022, 2021, 2020, 2019, 2018, 2017];
+$("#dyear").innerHTML = YEARS.map((y) => `<option>${y}</option>`).join("");
+$("#dfrom").innerHTML = YEARS.slice().reverse().map((y) => `<option>${y}</option>`).join("");
+function discoverMode() {
+  const k = S.dkind;
+  $("#dsim").style.display = k === "similar" ? "block" : "none";
+  $("#dfromw").style.display = k === "change" ? "block" : "none";
+  $("#dsegw").style.display = k === "view" ? "flex" : "none";
+  $("#drun").textContent = { similar: "Find similar places", change: "Find long-term change", view: "Show embedding map" }[k];
+  if (k !== "similar") { S.picking = false; $("#dpick").classList.remove("pri"); }
+  if (k !== "similar") $("#drad").value = Math.min(+$("#drad").value, 15) || 5;
+}
+discoverMode();
+function addExample(lat, lon) {
+  S.examples.push([+lat.toFixed(5), +lon.toFixed(5)]);
+  drawExamples();
+}
+function drawExamples() {
+  map.getSource("examples")?.setData({ type: "FeatureCollection", features: S.examples.map(([la, lo]) => ({ type: "Feature", geometry: { type: "Point", coordinates: [lo, la] }, properties: {} })) });
+  $("#dex").innerHTML = S.examples.length ? `${S.examples.length} example${S.examples.length > 1 ? "s" : ""}: ${S.examples.map(([a, b]) => `<span class="mono">${a},${b}</span>`).join(" · ")}` : "No examples yet.";
+}
+$("#dpick").onclick = () => { S.picking = !S.picking; $("#dpick").classList.toggle("pri", S.picking); $("#dpick").textContent = S.picking ? "Picking… (click the map)" : "Pick examples on map"; };
+$("#dclear").onclick = () => { S.examples = []; drawExamples(); };
+$("#dopac").oninput = (e) => map.getLayer("disc-img") && map.setPaintProperty("disc-img", "raster-opacity", +e.target.value);
+$("#drun").onclick = async () => {
+  const k = S.dkind, r = +$("#drad").value || 10, year = +$("#dyear").value;
+  let c = aoiCenter();
+  if (k === "similar") {
+    if (!S.examples.length) return status("#dstatus", "Pick at least one example on the map first.", true);
+    if (!c) c = [S.examples.reduce((a, p) => a + p[0], 0) / S.examples.length, S.examples.reduce((a, p) => a + p[1], 0) / S.examples.length];
+  }
+  if (!c) { const m = map.getCenter(); c = [m.lat, m.lng]; }
+  const body = { kind: k, where: `${c[0].toFixed(5)},${c[1].toFixed(5)}`, radius_km: r, year, examples: S.examples, year_from: +$("#dfrom").value, segments: $("#dseg").checked ? 8 : 0 };
+  if (k === "change" && body.year_from >= year) return status("#dstatus", "“From” must be before “Year”.", true);
+  $("#drun").disabled = true; S.picking = false; $("#dpick").classList.remove("pri"); $("#dpick").textContent = "Pick examples on map";
+  status("#dstatus", `<span class="spin"></span>Reading 64-dimensional embeddings for a ${2 * r} km box (30–90 s)…`);
+  try {
+    const { job } = await api("/api/embed", { body });
+    showDiscover(await waitJob(job));
+  } catch (e) { status("#dstatus", esc(e.message), true); }
+  finally { $("#drun").disabled = false; }
+};
+function showDiscover(fc) {
+  S.disc = fc;
+  const p = fc.properties, st = p.stats || {};
+  if (map.getLayer("disc-img")) map.removeLayer("disc-img");
+  if (map.getSource("disc-img")) map.removeSource("disc-img");
+  map.addSource("disc-img", { type: "image", url: `/api/embed/${p.id}/overlay.png`, coordinates: p.corners });
+  map.addLayer({ id: "disc-img", type: "raster", source: "disc-img", paint: { "raster-opacity": +$("#dopac").value, "raster-resampling": "nearest" } }, "disc");
+  map.getSource("disc").setData({ type: "FeatureCollection", features: fc.features.map((f, i) => ({ ...f, properties: { ...f.properties, i } })) });
+  $("#dctl").style.display = "block";
+  const what = p.kind === "similar" ? `${fc.features.length} look-alikes · threshold ${st.threshold} · ${esc(st.method)}` : p.kind === "change" ? `${st.changed_area_km2} km² changed ${p.years[0]}→${p.years[1]} (${(st.share_changed * 100).toFixed(1)}%)` : `embedding map ${p.years[0]}${st.segments ? ` · ${st.segments} segments` : " · PCA colours"}`;
+  status("#dstatus", `${what} · ${p.resolution_m} m grid<br><span style="color:var(--faint)">${esc(p.attribution)}</span>`);
+  $("#dlist").innerHTML = fc.features.length ? fc.features.map((f, i) => {
+    const q = f.properties;
+    const label = p.kind === "change" ? `distance ${q.score}` : `similarity ${q.score}`;
+    return `<div class="item" data-i="${i}"><div class="t"><span class="dot" style="background:#fff"></span><b>${label}</b><span class="r">${(q.area_m2 / 1e4).toFixed(1)} ha</span></div><div class="m mono">${f.geometry.coordinates[1].toFixed(5)}, ${f.geometry.coordinates[0].toFixed(5)}</div></div>`;
+  }).join("") : `<div class="empty">${p.kind === "view" ? "Similar colours mean similar land. Use it to see structure no single image shows." : "Nothing above the threshold here."}</div>`;
+  const cs = p.corners; map.fitBounds([[Math.min(cs[0][0], cs[3][0]), cs[2][1]], [Math.max(cs[1][0], cs[2][0]), cs[0][1]]], { padding: 60 });
+}
+$("#dlist").onclick = (e) => { const c = e.target.closest("[data-i]"); if (c) inspectMatch(+c.dataset.i, true); };
+function inspectMatch(i, fly = false) {
+  const f = S.disc?.features[i]; if (!f) return;
+  const q = f.properties, [lon, lat] = f.geometry.coordinates, k = S.disc.properties.kind;
+  if (fly) map.fitBounds([[q.bbox[0], q.bbox[1]], [q.bbox[2], q.bbox[3]]], { padding: 160, maxZoom: 16 });
+  openInspector(`${k === "change" ? "Changed place" : "Look-alike"} · <span class="mono">${q.score}</span>`, `
+    <dl class="kv"><dt>${k === "change" ? "distance" : "similarity"}</dt><dd>${q.score} ${k === "change" ? "(1 − cosine between years)" : "(whitened cosine; ≥0.6 strong)"}</dd><dt>area</dt><dd>${(q.area_m2 / 1e4).toFixed(1)} ha</dd><dt>position</dt><dd>${lat.toFixed(5)}, ${lon.toFixed(5)}</dd><dt>years</dt><dd>${S.disc.properties.years.join(" → ")}</dd></dl>
+    <p style="color:var(--muted);margin-top:14px">An embedding match is a look-alike, not an identification. Zoom in on the basemap or search imagery here to confirm.</p>
+    <button class="btn sm" id="mimg">Search imagery here</button>`);
+  $("#mimg").onclick = () => { setAoiFromPoint(lat, lon, true); setMode("imagery"); $("#go").click(); };
+}
+
+// ------------------------------------------------------------------ super-resolution & aircraft in flight
+async function enhanceScene(s) {
+  if (!S.aoi) return toast("Select an area first.", true);
+  const c = aoiCenter(), r = Math.min(1.5, (S.aoi[3] - S.aoi[1]) * 55);
+  const bbox = [c[1] - r / (111.32 * Math.cos((c[0] * Math.PI) / 180)), c[0] - r / 110.57, c[1] + r / (111.32 * Math.cos((c[0] * Math.PI) / 180)), c[0] + r / 110.57];
+  try {
+    const { job } = await api("/api/enhance", { body: { scene: s, bbox } });
+    const d = await waitJob(job, "Super-resolving with SEN2SR (10 → 2.5 m)");
+    if (map.getLayer("sr")) map.removeLayer("sr");
+    if (map.getSource("sr")) map.removeSource("sr");
+    map.addSource("sr", { type: "image", url: `/api/enhance/${d.id}/sr.png`, coordinates: d.corners });
+    map.addLayer({ id: "sr", type: "raster", source: "sr", paint: { "raster-opacity": 1, "raster-resampling": "linear" } }, "aoi");
+    $("#hud").style.display = "block"; $("#hudt").textContent = `${d.notice} · ${d.variant}`;
+    map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 40 });
+    toast(`Enhanced ×4 · <b>AI-generated detail, not evidence</b>`);
+  } catch (e) { toast(esc(e.message), true); }
+}
+async function airborneScene(s) {
+  if (!S.aoi) return toast("Select an area first.", true);
+  try {
+    const { job } = await api("/api/airborne", { body: { scene: s, bbox: S.aoi } });
+    const fc = await waitJob(job, "Looking for aircraft in flight (band timing)");
+    S.air = fc;
+    const feats = [];
+    fc.features.forEach((f, i) => {
+      const p = f.properties, [lon, lat] = f.geometry.coordinates, t = 30;
+      const dE = Math.sin((p.apparent_heading_deg * Math.PI) / 180) * p.apparent_speed_ms * t, dN = Math.cos((p.apparent_heading_deg * Math.PI) / 180) * p.apparent_speed_ms * t;
+      feats.push({ type: "Feature", geometry: { type: "LineString", coordinates: [[lon, lat], [lon + dE / (111320 * Math.cos((lat * Math.PI) / 180)), lat + dN / 110540]] }, properties: { i } });
+      feats.push({ type: "Feature", geometry: f.geometry, properties: { i } });
+    });
+    map.getSource("air").setData({ type: "FeatureCollection", features: feats });
+    toast(`${fc.features.length} aircraft in flight on ${esc(day(fc.properties.time))} · lines show 30 s of apparent motion`);
+    if (fc.features.length) inspectAircraft(0);
+  } catch (e) { toast(esc(e.message), true); }
+}
+function inspectAircraft(i) {
+  const f = S.air?.features[i]; if (!f) return;
+  const p = f.properties, kn = (v) => (v * 1.944).toFixed(0) + " kn";
+  openInspector(`<span class="dot" style="background:var(--c-aircraft);display:inline-block;margin-right:8px"></span>Aircraft in flight`,
+    `<div class="bigchip" style="background-image:url('${esc(p.chip)}')"></div>
+     <dl class="kv"><dt>apparent</dt><dd>${kn(p.apparent_speed_ms)} toward ${p.apparent_heading_deg.toFixed(0)}°</dd>
+     ${p.speed_ms != null ? `<dt>solved</dt><dd>${kn(p.speed_ms)}, heading ${p.heading_deg.toFixed(0)}°, ~${Math.round(p.altitude_m).toLocaleString()} m</dd>` : `<dt>note</dt><dd>${esc(p.note || "")}</dd>`}
+     <dt>signature</dt><dd>${p.bands_matched} bands, fit ${p.fit_rms_px} px, contrast ${p.contrast}σ</dd><dt>time</dt><dd>${esc(hm(p.time))}Z</dd><dt>position</dt><dd>${p.lat}, ${p.lon}</dd></dl>
+     <p style="color:var(--muted);margin-top:14px">Blue, NIR, green and red are recorded 0, 0.26, 0.53 and 1.0 s apart, so an aircraft appears as a rainbow of blobs on a line. Altitude adds parallax against the satellite track.</p>
+     ${S.air.features.length > 1 ? `<div class="row" style="margin-top:8px"><button class="btn sm" id="aprev">Previous</button><button class="btn sm" id="anext">Next</button></div>` : ""}`);
+  map.flyTo({ center: f.geometry.coordinates, zoom: Math.max(map.getZoom(), 13) });
+  $("#aprev")?.addEventListener("click", () => inspectAircraft((i - 1 + S.air.features.length) % S.air.features.length));
+  $("#anext")?.addEventListener("click", () => inspectAircraft((i + 1) % S.air.features.length));
 }
 
 // ------------------------------------------------------------------ objects

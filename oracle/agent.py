@@ -30,6 +30,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -51,6 +52,16 @@ counted, measured (+/- ~20 m), and judged underway from wakes, but not typed or 
 - Sub-metre imagery exists only in places: Maxar open data (disaster events), NAIP (USA), sparse Umbra/Capella \
 radar. Esri Wayback is sub-metre but view-only. Check search_imagery before relying on detect_objects.
 - AIS ship positions exist only if the user imported them (ais_positions errors otherwise).
+- Foundation-model search: find_similar uses AlphaEarth Foundations embeddings (Google DeepMind; one vector \
+per 10 m pixel per year, 2017-2025) to find every place in an area that resembles example points: after \
+locating one tank farm, airfield, solar plant, mine or port, it finds the others. semantic_change compares \
+two years to find long-term development. Matches are ranked candidates (whitened similarity >= 0.7 is \
+worth checking, 0.85+ strong); confirm the ones that matter with imagery.
+- detect_flying_aircraft finds aircraft in flight on Sentinel-2 from the timing gap between its colour \
+bands, with velocity, and speed and altitude when the heading is measurable.
+- Web search, when available, is for context: what a facility is, reported events, an explanation for an \
+anomaly. It never replaces imagery. Reporting and imagery are different kinds of evidence; when they \
+disagree, say so. Web sources are cited automatically.
 - The object database holds earlier detections, cross-date tracks with same-object probabilities, and \
 derived events, so cheap queries (get_events, query_objects, get_tracks) can answer history questions \
 without new processing.
@@ -61,6 +72,8 @@ detector that answers the question on the newest clear image. Corroborate an imp
 date or sensor (radar when optical is cloudy) when the budget allows. Use next_passes to say when a gap can be \
 closed. You have a budget of about {max_calls} tool calls; stop as soon as the question is answered.
 - Use precise 'lat,lon' from geocode in later calls, and keep areas tight (a port or base is ~3-8 km).
+- Independent tool calls run in parallel: request them in the same turn (e.g. detect_ships and \
+detect_change on the same area).
 - If a tool fails, adapt (other sensor, other date, smaller area) or report the gap; never fill it with guesses.
 
 Evidence discipline (non-negotiable):
@@ -160,8 +173,10 @@ def investigate(
     effort: str = "high",
     on_step: Callable[[dict], None] | None = None,
     inv: Investigation | None = None,
+    web: bool = True,
 ) -> Investigation:
-    """Run an investigation. ``use_llm``: None = Claude if available else playbook."""
+    """Run an investigation. ``use_llm``: None = Claude if available else playbook.
+    ``web``: let Claude use web search for context (open-source reporting)."""
     store = store or Store()
     inv = inv or Investigation(question.strip())
     inv.toolbox = Toolbox(store)
@@ -174,7 +189,7 @@ def investigate(
             _playbook(inv, on_step)
         else:
             try:
-                _llm(inv, max_calls, effort, on_step)
+                _llm(inv, max_calls, effort, on_step, web)
             except _Unavailable as exc:
                 if use_llm:
                     raise RuntimeError(str(exc)) from None
@@ -199,7 +214,10 @@ def check_citations(answer: str, evidence: dict) -> dict:
             if eid not in cited:
                 cited.append(eid)
     unknown = [c for c in cited if c not in evidence]
-    kinds = {k: sum(1 for c in cited if c in evidence and evidence[c].kind == k) for k in ("observation", "derived", "reference")}
+    kinds = {
+        k: sum(1 for c in cited if c in evidence and evidence[c].kind == k)
+        for k in ("observation", "derived", "reference", "report")
+    }
     return {
         "cited": cited,
         "unknown": unknown,
@@ -209,9 +227,13 @@ def check_citations(answer: str, evidence: dict) -> dict:
     }
 
 
+_STEP_LOCK = threading.Lock()
+
+
 def _step(inv: Investigation, on_step, kind: str, **kw) -> dict:
-    s = {"n": len(inv.steps) + 1, "type": kind, "t": round(time.time(), 1), **kw}
-    inv.steps.append(s)
+    with _STEP_LOCK:
+        s = {"n": len(inv.steps) + 1, "type": kind, "t": round(time.time(), 1), **kw}
+        inv.steps.append(s)
     if on_step:
         on_step(s)
     return s
@@ -219,7 +241,6 @@ def _step(inv: Investigation, on_step, kind: str, **kw) -> dict:
 
 def _run_tool(inv: Investigation, on_step, name: str, args: dict) -> tuple[dict | None, str | None]:
     tb = inv.toolbox
-    before = set(tb.evidence)
     s = _step(inv, on_step, "tool", tool=name, input=args, status="running")
     t0 = time.time()
     try:
@@ -228,7 +249,7 @@ def _run_tool(inv: Investigation, on_step, name: str, args: dict) -> tuple[dict 
         result, err = None, str(exc)
     except Exception as exc:  # noqa: BLE001 - a crashing tool is reported to the model, not fatal
         result, err = None, f"{name} failed: {type(exc).__name__}: {exc}"
-    new = [e for e in tb.evidence if e not in before]
+    new = tb.collected()
     s.update(
         status="error" if err else "ok",
         ms=round((time.time() - t0) * 1000),
@@ -256,7 +277,10 @@ class _Unavailable(Exception):
     """Claude can't be used (no SDK / credentials / API) before any tool ran."""
 
 
-def _llm(inv: Investigation, max_calls: int, effort: str, on_step) -> None:
+WEB_SEARCH = {"type": "web_search_20260209", "name": "web_search", "max_uses": 5}
+
+
+def _llm(inv: Investigation, max_calls: int, effort: str, on_step, web: bool = True) -> None:
     try:
         import anthropic
     except ImportError as exc:
@@ -272,12 +296,13 @@ def _llm(inv: Investigation, max_calls: int, effort: str, on_step) -> None:
     calls = 0
     final_text = ""
     for _turn in range(MAX_TURNS):
+        tools = TOOLS + ([WEB_SEARCH] if web else [])
         try:
             resp = client.beta.messages.create(
                 model=MODEL,
                 max_tokens=16000,
                 system=system,
-                tools=TOOLS,
+                tools=tools,
                 messages=messages,
                 thinking={"type": "adaptive", "display": "summarized"},
                 output_config={"effort": effort},
@@ -290,6 +315,12 @@ def _llm(inv: Investigation, max_calls: int, effort: str, on_step) -> None:
             raise _Unavailable("no Anthropic credentials (set ANTHROPIC_API_KEY or run `ant auth login`)") from exc
         except anthropic.AuthenticationError as exc:
             raise _Unavailable("Anthropic credentials were rejected") from exc
+        except anthropic.BadRequestError as exc:
+            if web and "web_search" in str(exc).lower():  # web search not enabled for this org
+                web = False
+                _step(inv, on_step, "note", summary="web search unavailable for this API key; continuing without it")
+                continue
+            raise
         except (anthropic.APIConnectionError, anthropic.RateLimitError, anthropic.APIStatusError) as exc:
             if calls == 0:
                 raise _Unavailable(f"Anthropic API: {type(exc).__name__}") from exc
@@ -303,26 +334,37 @@ def _llm(inv: Investigation, max_calls: int, effort: str, on_step) -> None:
         for b in resp.content:
             if b.type == "thinking" and getattr(b, "thinking", ""):
                 _step(inv, on_step, "thinking", summary=b.thinking[:800])
-            elif b.type == "text" and b.text.strip():
-                texts.append(b.text)
+            elif b.type == "server_tool_use":
+                q = (getattr(b, "input", None) or {}).get("query", "")
+                _step(inv, on_step, "tool", tool=b.name, input={"query": q}, status="ok", ms=None, evidence=[], summary="")
+            elif b.type == "text" and b.text:
+                texts.append(_with_citations(inv, b))
         messages.append({"role": "assistant", "content": resp.content})
         if resp.stop_reason == "pause_turn":
             continue
         uses = [b for b in resp.content if b.type == "tool_use"]
         if not uses or resp.stop_reason in ("end_turn", "max_tokens", "stop_sequence"):
-            final_text = "\n\n".join(texts).strip()
+            final_text = "".join(texts).strip()  # cited answers arrive as several contiguous text blocks
             if resp.stop_reason == "max_tokens":
                 final_text += "\n\n_(answer truncated at the output limit)_"
             break
-        if texts:
-            _step(inv, on_step, "note", summary=" ".join(texts)[:600])
+        if "".join(texts).strip():
+            _step(inv, on_step, "note", summary="".join(texts).strip()[:600])
+        runnable = []
+        for u in uses:
+            if calls < max_calls:
+                calls += 1
+                runnable.append(u)
+        # Independent calls in one turn run concurrently (I/O-bound: catalogs, COGs, orbit data).
+        with ThreadPoolExecutor(max_workers=max(1, min(4, len(runnable)))) as pool:
+            ran = pool.map(lambda u: _run_tool(inv, on_step, u.name, dict(u.input or {})), runnable)
+            outs = dict(zip([u.id for u in runnable], ran, strict=True))
         results: list[dict] = []
         for u in uses:
-            if calls >= max_calls:
+            if u.id not in outs:
                 results.append({"type": "tool_result", "tool_use_id": u.id, "content": "tool budget exhausted", "is_error": True})
                 continue
-            calls += 1
-            result, err = _run_tool(inv, on_step, u.name, dict(u.input or {}))
+            result, err = outs[u.id]
             content = err if err else inv.toolbox.compact(result)
             results.append({"type": "tool_result", "tool_use_id": u.id, "content": content, "is_error": bool(err)})
         if calls >= max_calls:
@@ -340,6 +382,27 @@ def _llm(inv: Investigation, max_calls: int, effort: str, on_step) -> None:
         )
 
 
+def _with_citations(inv: Investigation, block) -> str:
+    """Register a text block's web citations as 'report' evidence and append their ids."""
+    cites = getattr(block, "citations", None) or []
+    ids = []
+    for c in cites:
+        url = getattr(c, "url", None)
+        if not url:
+            continue
+        tb = inv.toolbox
+        existing = next((e.id for e in tb.evidence.values() if e.kind == "report" and e.links.get("url") == url), None)
+        if existing is None:
+            title = getattr(c, "title", None) or url
+            snippet = (getattr(c, "cited_text", None) or "").strip()
+            domain = re.sub(r"^https?://(www\.)?([^/]+).*$", r"\2", url)
+            summary = f"{title} ({domain})" + (f': "{snippet[:200]}"' if snippet else "")
+            existing = tb.add("report", "web_search", summary, links={"url": url})
+        if existing not in ids:
+            ids.append(existing)
+    return block.text + "".join(f"[{i}]" for i in ids)
+
+
 # --------------------------------------------------------------------------- offline playbook
 
 _INTENTS = {
@@ -350,6 +413,9 @@ _INTENTS = {
     "change": r"chang|construct|built|build|new\b|expan|flood|fire|burn|clear|deforest|earthwork|reclam|island|"
     r"damage|destroy|develop",
     "passes": r"\bwhen\b|next pass|revisit|overpass|next image|next look|satellite.*(over|pass)",
+    "similar": r"similar|look(s)? like|other (places|sites|facilities|ones)|find (all|more|other)|more like|elsewhere",
+    "longterm": r"since (19|20)\d\d|over the (last|past) (few |\d+ )?years|long[- ]term|in recent years|years",
+    "flying": r"flying|in flight|airborne|overflight|flights|in the air|airspace",
 }
 _PLACE = re.compile(
     r"\b(?:at|in|near|around|over|off|of|outside|across)\s+((?:the\s+)?[A-Z][\w'’.\-]*(?:[\s,]+[A-Z][\w'’.\-]*)*)"
@@ -393,8 +459,10 @@ def _playbook(inv: Investigation, on_step) -> None:
             return
         lat, lon = g["lat"], g["lon"]
     where = f"{lat:.5f},{lon:.5f}"
-    if not want & {"maritime", "air", "ground", "change"}:
+    if not want & {"maritime", "air", "ground", "change", "similar", "longterm", "flying"}:
         want |= {"maritime", "change"} if re.search(_INTENTS["maritime"], place, re.I) else {"change"}
+    if "flying" in want:
+        want.discard("air")  # airborne, not parked: the band-timing detector, not YOLO
     _run_tool(inv, on_step, "search_imagery", {"where": where, "radius_km": 5, "days_back": 30})
     _run_tool(inv, on_step, "get_events", {"where": where, "radius_km": 10, "days": 60})
     if "maritime" in want:
@@ -404,10 +472,18 @@ def _playbook(inv: Investigation, on_step) -> None:
             _run_tool(inv, on_step, "detect_ships", {"where": where, "radius_km": 25, "source": "sentinel-1"})
     if want & {"air", "ground"}:  # searches the whole sub-metre archive, not just the last 30 days
         _run_tool(inv, on_step, "detect_objects", {"where": where, "radius_km": 0.6})
-    if "change" in want:
+    if "change" in want and "longterm" not in want:
         _, err = _run_tool(inv, on_step, "detect_change", {"where": where, "radius_km": 3, "source": "sentinel-2"})
         if err:
             _run_tool(inv, on_step, "detect_change", {"where": where, "radius_km": 3, "source": "sentinel-1"})
+    if "longterm" in want:
+        m = re.search(r"since ((?:19|20)\d\d)", q)
+        y0 = max(2017, int(m.group(1))) if m else 2017
+        _run_tool(inv, on_step, "semantic_change", {"where": where, "radius_km": 5, "year_from": y0, "year_to": 2025})
+    if "similar" in want:
+        _run_tool(inv, on_step, "find_similar", {"where": where, "radius_km": 30, "examples": [where]})
+    if "flying" in want:
+        _run_tool(inv, on_step, "detect_flying_aircraft", {"where": where, "radius_km": 12})
     _run_tool(inv, on_step, "next_passes", {"lat": lat, "lon": lon, "days": 7})
     inv.answer = _compose(inv)
 
@@ -428,6 +504,18 @@ def _compose(inv: Investigation, note: str = "") -> str:
     objs = [e for e in by_tool.get("detect_objects", []) if e.kind == "derived"]
     for e in objs:
         bottom.append(f"{e.summary} [{e.id}]")
+    for tool in ("find_similar", "semantic_change", "detect_flying_aircraft"):
+        items = by_tool.get(tool, [])
+        if items:
+            bottom.append(f"{items[0].summary} [{items[0].id}]")
+            for e in items[1:6]:
+                shows.append(f"{e.summary} [{e.id}]")
+    if by_tool.get("find_similar"):
+        gaps.append("Embedding matches are look-alikes, not identifications: confirm the ones that matter in imagery.")
+    if by_tool.get("detect_flying_aircraft"):
+        gaps.append(
+            "Airborne detections come from band-timing parallax at 10 m: velocity is reliable to ~10%, altitude is rough."
+        )
     change = by_tool.get("detect_change", [])
     if change:
         bottom.append(f"{change[0].summary} [{change[0].id}]")
@@ -445,7 +533,9 @@ def _compose(inv: Investigation, note: str = "") -> str:
         gaps.append("10 m imagery measures hull length (+/- ~20 m) but cannot identify ship type or name.")
     if change:
         gaps.append("Change classes come from spectral rules; confirm notable regions by eye in the before/after chips.")
-    if not (ships or objs or change):
+    if not (
+        ships or objs or change or any(by_tool.get(t) for t in ("find_similar", "semantic_change", "detect_flying_aircraft"))
+    ):
         gaps.append("No detector produced results; the area may lack recent clear imagery.")
     passes = by_tool.get("next_passes", [])
     out = ["**Bottom line**"]

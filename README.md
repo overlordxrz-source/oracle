@@ -2,7 +2,7 @@
 
 A free satellite OSINT workbench. Ask it a question in plain language and it
 investigates with its own tools, then answers with numbered evidence you can click.
-Underneath, Oracle does seven things:
+Underneath, Oracle does nine things:
 
 1. **Finds** the best free imagery of any point on Earth for any time window. It
    searches 8 archives at once and ranks them by resolution, coverage and cloud.
@@ -20,10 +20,18 @@ Underneath, Oracle does seven things:
 6. **Knows the pattern of life** of a place: ship-to-ship rendezvous, objects where
    the site's own history says nothing ever is, and when the next free satellite
    pass will come.
-7. **Investigates and briefs.** The Oracle agent plans, calls the tools above, reads
-   the results and writes an answer. Every claim cites evidence (E1, E2, ...) that
-   traces back to a specific image, detection or algorithm. It runs on Claude if
-   you've configured it, and as an offline playbook if not.
+7. **Searches the planet like a database** with a geospatial foundation model
+   (Google DeepMind's AlphaEarth Foundations embeddings): point at one tank farm,
+   solar plant or airfield and it finds the others, or shows what changed between any
+   two years since 2017.
+8. **Sees what isn't on the ground**: aircraft *in flight* on free Sentinel-2
+   imagery, with speed and heading from the 1-second gap between its colour bands,
+   and a 4x AI super-resolution view (10 m -> 2.5 m, ESA's SEN2SR) for looking closer.
+9. **Investigates and briefs.** The Oracle agent plans, calls the tools above (in
+   parallel when it can), searches the web for context, reads the results and writes
+   an answer. Every claim cites evidence (E1, E2, ...) that traces back to a specific
+   image, detection, algorithm or source. It runs on Claude if you've configured it,
+   and as an offline playbook if not.
 
 No accounts, no API keys, no paid data. Claude is the only optional extra.
 
@@ -89,7 +97,7 @@ Python 3.10+. Wheels bundle GDAL/PROJ, so you don't need any system packages.
 ```
 git clone https://github.com/overlordxrz-source/oracle && cd oracle
 python -m venv .venv && . .venv/bin/activate
-pip install -e ".[all]"     # or: -e .  (core)  |  -e ".[ai]" (YOLO)  |  -e ".[llm]" (Claude briefs)
+pip install -e ".[all]"     # or: -e .  (core) | ".[ai]" (YOLO, super-res) | ".[embed]" (AlphaEarth) | ".[llm]" (Claude)
 oracle serve                # http://127.0.0.1:8000
 ```
 
@@ -112,8 +120,9 @@ On a Mac, `pip install -e ".[all]"` installs a PyTorch build with Metal support,
 Oracle sets `PYTORCH_ENABLE_MPS_FALLBACK=1` so the few unsupported ops fall back to the
 CPU. A **MacBook Air has no fan**: a single detection is fast, but a long sweep of
 YOLO sites will throttle after several minutes. For sustained runs use
-`ORACLE_YOLO_MODEL=yolo11l-obb.pt` (or `--model`). The ship and change detectors
-don't use the GPU at all; they're I/O-bound.
+`ORACLE_YOLO_MODEL=yolo11l-obb.pt` (or `--model`). Super-resolution also runs on the Apple GPU. The ship,
+change, embedding and aircraft-in-flight analyses don't need a GPU at all; they're
+I/O-bound.
 
 Overrides: `ORACLE_DEVICE=cpu|mps|cuda:0`, `ORACLE_YOLO_MODEL=<weights>`,
 `ORACLE_DB=<path>`, `ORACLE_CACHE=<dir>`.
@@ -134,11 +143,18 @@ slim dock on the left:
 - **Change.** Pick optical or radar and a recent or same-season-last-year baseline,
   then run on the selected area. Change regions are drawn on the map by kind, and each
   opens a before/after pair.
+- **Discover.** Foundation-model search. *Find similar*: click one or more example
+  places on the map, and every look-alike in the area lights up, ranked. *Long-term
+  change*: what changed between any two years since 2017. *Embedding map*: the 64
+  learned dimensions as false colour (or k-means segments), showing structure no
+  single image shows.
 - **Imagery.** Search all archives for the area you clicked or typed. Results are
   ranked, and a **timeline** shows every scene by source and date: click a scene,
   step with ←/→, **play** through them, or **blink** (B) between two dates to spot
   changes. Any scene streams onto the map at full resolution from its COG. Scene
-  cards also have **Find ships / Detect objects** and **PNG / GeoTIFF** export.
+  cards also have **Find ships / Detect objects** and **PNG / GeoTIFF** export, and
+  Sentinel-2 cards add **Enhance ×4** (a 2.5 m AI view, labelled as such) and
+  **Planes in flight**.
 - **Objects.** Everything the detectors found in view, clustered so tens of thousands
   stay fast. Filter by class and confidence; click one for an image chip, its size,
   heading, wake, AIS match or dark flag, and its track.
@@ -174,7 +190,14 @@ oracle detect    WHERE | --file my.tif [--classes aircraft,helicopter] [--prompt
                  [--model yolo11s-obb.pt] [--no-vehicles] [--site NAME]
 
 # ask (the agent)
-oracle ask       "QUESTION" [--llm | --no-llm] [--max-calls 20] [--effort high] [-v] [--json inv.json]
+oracle ask       "QUESTION" [--llm | --no-llm] [--no-web] [--max-calls 20] [--effort high] [-v] [--json inv.json]
+
+# foundation model (AlphaEarth embeddings), super-resolution, aircraft in flight
+oracle similar   AREA --like "lat,lon" [--like ...] [--unlike ...] [-r 20] [--year 2025]
+oracle evolve    WHERE [-r 5] --from 2017 --to 2025       # long-term change between years
+oracle embed     WHERE [--year 2025] [--segments 8]       # false-colour embedding map
+oracle enhance   WHERE [-r 1.5] [--date D]                # 10 m -> 2.5 m (view only, not evidence)
+oracle airborne  WHERE [-r 10] [--date D] [--images 3]    # aircraft in flight: speed, heading
 
 # change, orbits
 oracle change    WHERE [-r KM] [-s sentinel-2|sentinel-1] [--after D] [--before D] [--baseline recent|anniversary] [--site S]
@@ -251,6 +274,8 @@ it and rejected it:
   still made **anchored** ships read 1-13 kn.
 
 Speeds come from the tracker (position change between sightings) or from AIS instead.
+For aircraft the same effect is large and clean, and Oracle uses it: see *Aircraft in
+flight* below.
 
 ### The tracker: "is this the same object, and how sure are we?"
 
@@ -350,24 +375,102 @@ whatever it is: earthworks, a new pier, a flooded field, a burn scar.
   predicted Sentinel-2A pass over Hormuz at 07:02 UTC and the Sentinel-2B pass over
   Singapore at 03:37 UTC both match the archive's acquisition times.
 
+### Planetary search with a foundation model (AlphaEarth Foundations)
+
+AlphaEarth Foundations (Google DeepMind, 2025) compresses a year of Sentinel-1/2,
+Landsat, elevation, climate and other data into a 64-number embedding for every 10 m
+pixel on land and coastal water. The annual embeddings for 2017-2025 are public as
+COGs on Source Cooperative (CC BY 4.0), and Oracle reads them directly.
+
+- **Reading.** A 78 MB tile index is downloaded once and turned into a local R*Tree.
+  The COGs are stored bottom-up with one band per dimension, so Oracle reads band
+  pairs in parallel (10× faster than serial), flips them, de-quantises the int8 values
+  (`sign(v)·(v/127.5)²`) and reprojects. Full-resolution blocks are cached on disk
+  (default cap 4 GB, `ORACLE_AEF_CACHE_GB`). The first look at an area costs a few
+  hundred MB of download; repeats are instant. A two-year comparison went from 77 s
+  cold to 7.6 s warm.
+- **Similarity.** Raw cosine similarity is nearly useless for search. Every pixel
+  shares a large common component, so in the UAE desert the median pixel scored 0.79
+  against a solar farm and plain sand reached 0.98. Oracle **whitens** first: it
+  centres on the area's own mean embedding and scales by its principal components.
+  Then the solar park scored 0.96, the median pixel −0.02, and the best non-solar
+  look-alike 0.56: the right answer, "there's no other solar plant in this 90 km box".
+  With 3+ examples (or counter-examples) a small logistic probe on the whitened
+  features takes over. The rest of the example's own facility is never reported as a
+  discovery.
+- **Measured.** From one tank farm at Fujairah, the top three matches were all other
+  tank farms, including a separate terminal 11 km north. Lower in the list, tower
+  blocks whose round shadows resemble tanks scored 0.82-0.86, so treat ≥ 0.7 as "worth
+  checking" and 0.85+ as strong.
+- **Long-term change** is the cosine distance between two years' embeddings, with a
+  robust z-score over the area. At the Expo 2020 Dubai site, 2017 → 2021 flagged a
+  654 ha region centred on the Expo grounds (distance 0.69), with 20.5% of the 6 km
+  box changed. Because each embedding summarises a whole year, it's immune to clouds
+  and seasons. That's also why it can't see last week (use `oracle change` for that).
+
+### Aircraft in flight
+
+Sentinel-2 records its bands at slightly different moments: NIR 0.264 s, green
+0.527 s and red 1.005 s after blue. A jet at 230 m/s moves 23 pixels between blue and
+red, so it appears as four blobs on a straight line, spaced exactly 0 : 0.263 : 0.524
+: 1. Oracle looks for that spacing. It also requires each blob to be *absent* from
+the other bands at that spot: a rooftop is bright in every band at once, a moving
+aircraft never is. The first version without that test found 11,455 "aircraft" in
+one Dubai scene. With it there were zero false positives in four scenes, and four
+real aircraft:
+
+- one on the DXB runway at 164 kn, heading 123°, along runway 12/30 (a takeoff or
+  landing roll);
+- one on final approach to runway 12, heading 121°;
+- two departures or arrivals over the Gulf.
+
+Altitude adds parallax against the satellite's track: about 8.4 m/s of apparent speed
+per km of height. The track direction comes from SGP4 on the satellite's TLE at the
+image time. When the fuselage heading can be measured, speed and altitude are solved
+separately. At 10 m an airliner is only 4-7 pixels, so Oracle only trusts a clearly
+elongated blob. A looser test produced a 9 km altitude for a departure that was
+certainly about 1 km up. Otherwise it reports the apparent velocity plus the range of
+true speeds for 0-11 km altitude.
+
+### Super-resolution (look, don't cite)
+
+`Enhance ×4` runs ESA OpenSR's **SEN2SR** (Aybar et al., 2025), trained on
+Sentinel-2/NAIP pairs, on the red, green, blue and NIR bands: 10 m → 2.5 m.
+- **Variants.** The 2.3 MB CNN "lite" model runs anywhere: CPU, Apple GPU, CUDA. The
+  Mamba "full" model is used when CUDA and `mamba_ssm` are available.
+- **Tiling.** Tiles overlap with feathered blending, so there are no seams.
+- **Constraint.** The model's hard-constraint layer forces the output, averaged back
+  to 10 m, to equal the input: measured error 0.0014 reflectance at Jebel Ali. So it
+  can't invent reflectance, but it does invent plausible sub-pixel *structure*.
+- **Use.** Oracle shows it labelled as AI-enhanced and never feeds it to a detector
+  or cites it as evidence.
+
 ### The Oracle agent and provenance
 
 `oracle ask` (or the command bar) runs an investigation:
 
 - **With Claude** (`claude-opus-5-5`, adaptive thinking, server-side refusal
-  fallbacks): a manual tool-use loop over 14 tools. The tools are geocode,
-  search_imagery, detect_ships, detect_objects, detect_change, query_objects,
-  get_tracks, get_track, get_events, next_passes, wayback_history, list_sites,
-  monitor_site and ais_positions. The model plans, starts with cheap queries, runs a
-  detector on the newest clear image, corroborates important claims with a second
-  date or sensor, and stops when the question is answered. A tool-call budget caps
-  the run (default 20).
+  fallbacks): a manual tool-use loop over 17 tools.
+  - **The tools:** geocode, search_imagery, detect_ships, detect_objects,
+    detect_change, find_similar, semantic_change, detect_flying_aircraft,
+    query_objects, get_tracks, get_track, get_events, next_passes, wayback_history,
+    list_sites, monitor_site and ais_positions.
+  - **How it runs:** the model plans, starts with cheap queries, runs detectors on
+    the newest clear image, corroborates important claims with a second date or
+    sensor, and stops when the question is answered. Independent calls in one turn
+    run **in parallel**, and evidence is attributed to the right call even then. A
+    tool-call budget caps the run (default 20).
+  - **Web search** (Claude's server-side tool) adds context: what a facility is, or
+    what's been reported there. Every web citation becomes numbered `report` evidence
+    with its URL, kept separate from what the imagery shows. Turn it off with
+    `--no-web`; if the API key doesn't allow web search, Oracle continues without it.
 - **Offline playbook.** The same tools in a fixed order chosen from keywords in the
   question, with a templated answer.
 - **Evidence.** Every fact a tool returns is registered as evidence and labelled:
   - `observation`: one detection in one image, with its chip;
   - `derived`: an algorithm's output, such as tracks, change regions or events;
-  - `reference`: a catalog, orbital or gazetteer fact.
+  - `reference`: a catalog, orbital or gazetteer fact;
+  - `report`: open-source reporting found by web search, with its URL.
 
   The answer has to cite the ids. Afterwards Oracle checks every citation against
   the registry and flags any it doesn't know as unsupported. Investigations are
@@ -395,7 +498,9 @@ exists** is flagged dark.
 - There will be false positives (surf lines, the odd cloud streak, platforms, wind
   farms) and misses (small, dark and wooden boats). Use the image chips.
 - Wayback releases are mosaics. Check the capture date at your exact point.
-- **Licences:** Maxar Open Data is non-commercial. Esri imagery is display-only, with
+- **Licences:** AlphaEarth embeddings are CC BY 4.0 ("The AlphaEarth Foundations
+  Satellite Embedding dataset is produced by Google and Google DeepMind."). SEN2SR
+  weights are CC0. Maxar Open Data is non-commercial. Esri imagery is display-only, with
   attribution. Capella, Umbra and WorldCover are CC BY 4.0. Ultralytics code and weights
   are **AGPL-3.0**.
 - Change classes are spectral rules, not a trained classifier. "New bright surface"
@@ -404,6 +509,12 @@ exists** is flagged dark.
   baseline mixes orbit directions (Oracle notes it when it does).
 - "Likely" passes mean the geometry *allows* an acquisition. Sentinel-1 also depends
   on ESA's acquisition plan.
+- Embedding matches are look-alikes, not identifications: a tower block's shadows can
+  resemble a tank farm. Embeddings are annual, so they describe what a place *was*
+  that year.
+- Super-resolved pixels are a model's guess at sub-pixel detail: for looking, never
+  for counting or citing.
+- Aircraft-in-flight altitudes are rough; apparent velocity is the solid measurement.
 - The agent is only as good as its tools and data. It can pick a poor area: geocoders
   return city centroids, not anchorages, which is why the playbook searches 25 km for
   maritime questions. Read the step trace. Claims it can't cite are flagged.
@@ -416,7 +527,9 @@ exists** is flagged dark.
 
 ```
 pip install -e ".[dev]"
-pytest              # 69 offline tests: detectors, tracker, events, AIS, store, API, briefs,
-                    # orbits, STS/unusual-location, change classes, agent loop (mocked Claude), playbook
+pytest              # 86 offline tests: detectors, tracker, events, AIS, store, API, briefs, orbits,
+                    # STS/unusual-location, change classes, embeddings search/change/index,
+                    # super-resolution tiling, aircraft-in-flight physics, agent loop (mocked
+                    # Claude: parallel tools, web citations), playbook
 pytest -m live      # smoke tests against the real catalogs
 ```

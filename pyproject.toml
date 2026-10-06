@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oracle-osint"
-version = "0.3.0"
-description = "Free satellite OSINT: imagery search, YOLO/ship detection, change detection, tracking, pattern of life, and an evidence-citing investigation agent"
+version = "0.4.0"
+description = "Free satellite OSINT: imagery search, foundation-model search, detection, change, tracking, super-resolution, aircraft in flight, and an evidence-citing investigation agent"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -23,10 +23,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-ai = ["ultralytics>=8.3"]            # YOLO object detection (pulls torch; Ultralytics is AGPL-3.0)
-llm = ["anthropic>=1.0"]             # Claude-written briefs
-all = ["ultralytics>=8.3", "anthropic>=1.0"]
-dev = ["pytest>=8", "ruff>=0.5", "anthropic>=1.0"]
+ai = [                               # YOLO detection + Sentinel-2 super-resolution (pulls torch)
+  "ultralytics>=8.3",                #   Ultralytics is AGPL-3.0
+  "sen2sr>=0.8",                     #   ESA OpenSR SEN2SR (CC0 weights from Hugging Face)
+  "safetensors>=0.4",
+]
+embed = ["pyarrow>=14"]              # AlphaEarth embeddings index (Google DeepMind, CC BY 4.0)
+llm = ["anthropic>=1.0"]             # Claude agent and briefs
+all = ["ultralytics>=8.3", "sen2sr>=0.8", "safetensors>=0.4", "pyarrow>=14", "anthropic>=1.0"]
+dev = ["pytest>=8", "ruff>=0.5", "anthropic>=1.0", "pyarrow>=14"]
 
 [project.scripts]
 oracle = "oracle.cli:main"

@@ -341,7 +341,7 @@ def cmd_ask(args) -> None:
             print(f"  .. {step['summary'][:300]}", file=sys.stderr)
 
     use = False if args.no_llm else (True if args.llm else None)
-    inv = investigate(args.question, use_llm=use, max_calls=args.max_calls, effort=args.effort, on_step=show)
+    inv = investigate(args.question, use_llm=use, max_calls=args.max_calls, effort=args.effort, on_step=show, web=not args.no_web)
     print(f"\n[{inv.engine}] {inv.status}  (investigation {inv.id})\n", file=sys.stderr)
     print(inv.answer)
     ev = inv.toolbox.evidence
@@ -361,6 +361,121 @@ def cmd_ask(args) -> None:
     if args.json:
         Path(args.json).write_text(json.dumps(inv.to_dict(), indent=1, default=str))
         print(f"  -> {args.json}", file=sys.stderr)
+
+
+def _latlon_list(items: list[str] | None) -> list[tuple[float, float]]:
+    return [parse_aoi(x, 0.05).center for x in items or []]
+
+
+def cmd_similar(args) -> None:
+    from . import embeddings as E
+
+    aoi = parse_aoi(args.where, args.radius)
+    ex = _latlon_list(args.like)
+    if not ex:
+        sys.exit("give at least one --like 'lat,lon' (or a place) example")
+    t0 = time.time()
+    r = E.find_similar(aoi, ex, args.year, _latlon_list(args.unlike) or None, threshold=args.threshold)
+    print(f"AlphaEarth {args.year} search, {r.stats['method']}, {r.grid.res:.0f} m grid, {time.time() - t0:.0f}s")
+    print(f"  threshold {r.stats['threshold']}, background median {r.stats['background_median']}, {len(r.matches)} matches")
+    for m in r.matches[: args.top]:
+        print(f"  {m.score:5.2f}  {m.lat:.5f},{m.lon:.5f}  {m.area_m2 / 1e4:7.1f} ha")
+    _save_embed(r, args.out, "similar")
+
+
+def cmd_evolve(args) -> None:
+    from . import embeddings as E
+
+    aoi = parse_aoi(args.where, args.radius)
+    t0 = time.time()
+    r = E.semantic_change(aoi, args.year_from, args.year_to)
+    st = r.stats
+    print(
+        f"AlphaEarth {args.year_from} -> {args.year_to}: {st['changed_area_km2']} km2 changed "
+        f"({st['share_changed']:.1%}), {time.time() - t0:.0f}s"
+    )
+    for m in r.matches[: args.top]:
+        print(f"  distance {m.score:4.2f}  {m.lat:.5f},{m.lon:.5f}  {m.area_m2 / 1e4:7.1f} ha")
+    _save_embed(r, args.out, f"evolve_{args.year_from}_{args.year_to}")
+
+
+def cmd_embed(args) -> None:
+    from . import embeddings as E
+
+    r = E.embedding_view(parse_aoi(args.where, args.radius), args.year, args.segments)
+    _save_embed(r, args.out, f"embedding_{args.year}")
+
+
+def _save_embed(r, out: str, stem: str) -> None:
+    from .embeddings import ATTRIBUTION
+
+    d = Path(out)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{stem}.png").write_bytes(r.png())
+    (d / f"{stem}.geojson").write_text(json.dumps(r.geojson(), indent=1))
+    print(f"  -> {d / stem}.png (georeferenced corners in the .geojson)\n  {ATTRIBUTION}")
+
+
+def cmd_enhance(args) -> None:
+    from .search import search
+    from .superres import enhance
+
+    aoi = parse_aoi(args.where, args.radius)
+    end = parse_dt(args.date + "T23:59:59Z") if args.date else datetime.now(timezone.utc)
+    res = search(
+        aoi,
+        end - timedelta(days=60 if not args.date else 1),
+        end,
+        sources=["sentinel-2"],
+        max_cloud=args.max_cloud,
+        sort="date",
+        min_coverage=0.9,
+    )
+    if not res.scenes:
+        sys.exit("no clear Sentinel-2 image covering the area")
+    t0 = time.time()
+    r = enhance(res.scenes[0], aoi, args.variant)
+    d = Path(args.out)
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / f"{r.scene.date}_superres_{r.variant}.png"
+    r.side_by_side().save(p)
+    print(
+        f"{r.scene.id}: {r.lr.shape[2]}x{r.lr.shape[1]} px at 10 m -> {r.sr.shape[2]}x{r.sr.shape[1]} at 2.5 m "
+        f"({r.variant}, {time.time() - t0:.0f}s)"
+    )
+    print(f"  -> {p}\n  AI-enhanced: plausible detail, not evidence")
+
+
+def cmd_airborne(args) -> None:
+    from .airborne import detect_airborne
+    from .search import search
+
+    aoi = parse_aoi(args.where, args.radius)
+    end = parse_dt(args.date + "T23:59:59Z") if args.date else datetime.now(timezone.utc)
+    res = search(
+        aoi,
+        end - timedelta(days=30 if not args.date else 1),
+        end,
+        sources=["sentinel-2"],
+        max_cloud=60,
+        sort="date",
+        min_coverage=0.8,
+    )
+    for s in res.scenes[: args.images]:
+        acs = detect_airborne(s, aoi)
+        print(f"{s.datetime:%Y-%m-%d %H:%M}Z {s.platform}: {len(acs)} aircraft in flight")
+        for a in acs:
+            est = (
+                f"  -> {a.speed_ms * 1.944:4.0f} kn hdg {a.heading_deg:3.0f}  ~{a.altitude_m:6,.0f} m"
+                if a.speed_ms is not None
+                else f"  ({a.note})"
+                if a.note
+                else ""
+            )
+            print(
+                f"  {a.lat:.5f},{a.lon:.5f}  apparent {a.apparent_speed_ms * 1.944:4.0f} kn "
+                f"toward {a.apparent_heading_deg:3.0f}{est}"
+            )
 
 
 def cmd_passes(args) -> None:
@@ -417,6 +532,18 @@ def cmd_doctor(args) -> None:
     row("anthropic sdk", "installed" if importlib.util.find_spec("anthropic") else 'missing (pip install -e ".[llm]")')
     has_key = bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
     row("credentials", "env var set" if has_key else "none in env (ant auth login profiles also work)")
+    print("foundation models")
+    aef = CACHE_DIR / "aef"
+    blocks = sum(f.stat().st_size for f in (aef / "blocks").rglob("*.npy")) if (aef / "blocks").exists() else 0
+    row("alphaearth index", "ready" if (aef / "index.db").exists() else "downloads on first use (78 MB)")
+    row("alphaearth cache", f"{blocks / 1e9:.2f} GB (cap ORACLE_AEF_CACHE_GB, default 4)")
+    row("pyarrow", "installed" if importlib.util.find_spec("pyarrow") else 'missing (pip install -e ".[embed]")')
+    sr = CACHE_DIR / "models" / "sen2sr"
+    row(
+        "sen2sr",
+        ("installed" if importlib.util.find_spec("sen2sr") else 'missing (pip install -e ".[ai]")')
+        + (", weights cached" if sr.exists() else ""),
+    )
     print("storage")
     total = sum(f.stat().st_size for f in CACHE_DIR.rglob("*") if f.is_file()) if CACHE_DIR.exists() else 0
     row("cache", f"{CACHE_DIR} ({total / 1e6:.0f} MB)")
@@ -432,6 +559,8 @@ def cmd_doctor(args) -> None:
         "esri wayback": "https://s3-us-west-2.amazonaws.com/config.maptiles.arcgis.com/waybackconfig.json",
         "worldcover": "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/ESA_WorldCover_10m_2021_v200_N24E054_Map.tif",
         "celestrak (orbits)": "https://celestrak.org/NORAD/elements/gp.php?CATNR=40697&FORMAT=TLE",
+        "alphaearth (source.coop)": "https://data.source.coop/tge-labs/aef/README.md",
+        "hugging face (sen2sr)": "https://huggingface.co/api/models/tacofoundation/SEN2SR",
     }
     with httpx.Client(headers={"User-Agent": USER_AGENT}, timeout=15, follow_redirects=True) as c:
         for name, url in hosts.items():
@@ -552,7 +681,52 @@ def register(sub) -> None:
     sp.add_argument("--effort", default="high", choices=("low", "medium", "high", "xhigh", "max"))
     sp.add_argument("-v", "--verbose", action="store_true", help="also show the model's thinking summaries")
     sp.add_argument("--json", help="write the full investigation (steps, evidence, provenance) here")
+    sp.add_argument("--no-web", action="store_true", help="don't let Claude search the web for context")
     sp.set_defaults(fn=cmd_ask)
+
+    sp = sub.add_parser("similar", help="find places that look like your examples (AlphaEarth embeddings)")
+    sp.add_argument("where", help="area to search")
+    where(sp, 20.0)
+    sp.add_argument("--like", action="append", help="example 'lat,lon' or place (repeatable)")
+    sp.add_argument("--unlike", action="append", help="counter-example (repeatable)")
+    sp.add_argument("--year", type=int, default=2025)
+    sp.add_argument("--threshold", type=float)
+    sp.add_argument("--top", type=int, default=20)
+    sp.add_argument("-o", "--out", default="oracle-out")
+    sp.set_defaults(fn=cmd_similar)
+
+    sp = sub.add_parser("evolve", help="long-term change between two years (AlphaEarth embeddings)")
+    sp.add_argument("where")
+    where(sp, 5.0)
+    sp.add_argument("--from", dest="year_from", type=int, default=2017)
+    sp.add_argument("--to", dest="year_to", type=int, default=2025)
+    sp.add_argument("--top", type=int, default=20)
+    sp.add_argument("-o", "--out", default="oracle-out")
+    sp.set_defaults(fn=cmd_evolve)
+
+    sp = sub.add_parser("embed", help="false-colour map of the AlphaEarth embeddings (PCA or k-means segments)")
+    sp.add_argument("where")
+    where(sp, 5.0)
+    sp.add_argument("--year", type=int, default=2025)
+    sp.add_argument("--segments", type=int, default=0, help="k-means clusters instead of PCA colours")
+    sp.add_argument("-o", "--out", default="oracle-out")
+    sp.set_defaults(fn=cmd_embed)
+
+    sp = sub.add_parser("enhance", help="AI super-resolution of Sentinel-2 to 2.5 m (SEN2SR; for viewing, not evidence)")
+    sp.add_argument("where")
+    where(sp, 1.5)
+    sp.add_argument("--date")
+    sp.add_argument("--max-cloud", type=float, default=10)
+    sp.add_argument("--variant", default="auto", choices=("auto", "lite", "full"))
+    sp.add_argument("-o", "--out", default="oracle-out")
+    sp.set_defaults(fn=cmd_enhance)
+
+    sp = sub.add_parser("airborne", help="aircraft in flight on Sentinel-2: speed, heading, altitude (band parallax)")
+    sp.add_argument("where")
+    where(sp, 10.0)
+    sp.add_argument("--date")
+    sp.add_argument("--images", type=int, default=3, help="how many recent images to scan")
+    sp.set_defaults(fn=cmd_airborne)
 
     sp = sub.add_parser("passes", help="when will Sentinel-1/2 and Landsat next image a place (orbit prediction)")
     sp.add_argument("where", help="lat,lon | bbox | place")

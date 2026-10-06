@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import math
+import threading
 import time
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field
@@ -233,6 +234,45 @@ TOOLS: list[dict] = [
         "input_schema": _schema({**_WHERE, "start": _DATE, "end": _DATE}, ["where"]),
     },
 ]
+TOOLS += [
+    {
+        "name": "find_similar",
+        "description": "Few-shot planetary search with AlphaEarth Foundations embeddings (Google DeepMind's 2025 "
+        "geospatial foundation model: one 64-d vector per 10 m pixel summarising a whole year of optical, radar and "
+        "terrain data). Give example points of the thing you want ('lat,lon' or place names: e.g. a solar farm, a "
+        "tank farm, an airfield, an open-pit mine) and an area to search; returns every place whose embedding "
+        "matches, ranked by similarity (whitened cosine; >= 0.7 is a look-alike worth checking, 0.85+ strong). Annual, so it "
+        "finds what places ARE, not what happened this week. 30-90 s. Max ~50 km radius.",
+        "input_schema": _schema(
+            {
+                **_WHERE,
+                "examples": {"type": "array", "items": {"type": "string"}, "description": "1-10 'lat,lon' or places"},
+                "negatives": {"type": "array", "items": {"type": "string"}, "description": "optional counter-examples"},
+                "year": {"type": "integer", "description": "2017-2025 (default 2025)"},
+            },
+            ["where", "examples"],
+        ),
+    },
+    {
+        "name": "semantic_change",
+        "description": "Long-term change in what places ARE, from AlphaEarth annual embeddings: cosine distance between "
+        "two years (2017-2025) per 10 m pixel, robust to cloud and season. Finds new ports, towns, mines, airfields, "
+        "cleared forest, reclaimed land, between any two years. Use detect_change for the last few weeks instead. "
+        "30-90 s. Max ~30 km radius.",
+        "input_schema": _schema(
+            {**_WHERE, "year_from": {"type": "integer"}, "year_to": {"type": "integer"}},
+            ["where"],
+        ),
+    },
+    {
+        "name": "detect_flying_aircraft",
+        "description": "Aircraft IN FLIGHT on a Sentinel-2 image, from the 1-second gap between its colour bands: "
+        "each aircraft appears as four blobs on a line, which gives its apparent velocity; with the fuselage "
+        "heading, true speed and altitude are solved (parallax). Works best near busy airports and airways. "
+        "20-60 s. Max ~15 km radius.",
+        "input_schema": _schema({**_WHERE, "scene_id": {"type": "string"}, "date": _DATE}, ["where"]),
+    },
+]
 TOOL_NAMES = {t["name"] for t in TOOLS}
 
 
@@ -244,15 +284,26 @@ class Toolbox:
         self.store = store or Store()
         self.evidence: dict[str, Evidence] = {}
         self.scenes: dict[str, Scene] = {}
+        self._lock = threading.Lock()
+        self._tl = threading.local()
 
     # ---------------------------------------------------------------- evidence
     def add(self, kind: str, tool: str, summary: str, **kw: Any) -> str:
-        eid = f"E{len(self.evidence) + 1}"
-        self.evidence[eid] = Evidence(eid, kind, tool, summary, **kw)
+        with self._lock:  # tools may run in parallel
+            eid = f"E{len(self.evidence) + 1}"
+            self.evidence[eid] = Evidence(eid, kind, tool, summary, **kw)
+        ids = getattr(self._tl, "ids", None)
+        if ids is not None:
+            ids.append(eid)
         return eid
+
+    def collected(self) -> list[str]:
+        """Evidence ids registered by the last call() on this thread."""
+        return list(getattr(self._tl, "ids", None) or [])
 
     # ---------------------------------------------------------------- dispatch
     def call(self, name: str, args: dict) -> dict:
+        self._tl.ids = []
         if name not in TOOL_NAMES:
             raise ToolError(f"unknown tool {name!r}")
         spec = next(t for t in TOOLS if t["name"] == name)
@@ -924,6 +975,165 @@ class Toolbox:
             "reference", "ais_positions", f"{len(vessels)} AIS-broadcasting vessels in the area {t0:%Y-%m-%d}..{t1:%Y-%m-%d}"
         )
         return {"vessels": vessels, "evidence": eid}
+
+    # ---------------------------------------------------------------- foundation-model & physics tools
+    def _points(self, items: list[str]) -> list[tuple[float, float]]:
+        pts = []
+        for it in items[:10]:
+            a = parse_aoi(str(it), 0.05)
+            pts.append(a.center)
+        return pts
+
+    def t_find_similar(
+        self,
+        where: str,
+        examples: list[str],
+        radius_km: float | None = None,
+        negatives: list[str] | None = None,
+        year: int | None = None,
+    ) -> dict:
+        from . import embeddings as emb
+        from .imagery import NoData
+
+        aoi = self._aoi(where, radius_km, 20.0, 50.0)
+        pos = self._points(examples)
+        if not pos:
+            raise ToolError("give at least one example")
+        neg = self._points(negatives or [])
+        try:
+            r = emb.remember(emb.find_similar(aoi, pos, year or 2025, negatives=neg or None))
+        except NoData as exc:
+            raise ToolError(f"find_similar: {exc}") from None
+        summary = self.add(
+            "derived",
+            "find_similar",
+            f"AlphaEarth {r.years[0]} embedding search ({r.stats['method']}): {len(r.matches)} places matching "
+            f"{len(pos)} example(s), {r.stats['matched_area_km2']} km2 above similarity {r.stats['threshold']}",
+            data={"result_id": r.id, **{k: v for k, v in r.stats.items() if k != "key"}},
+            lat=aoi.center[0],
+            lon=aoi.center[1],
+            links={"overlay": f"/api/embed/{r.id}/overlay.png"},
+        )
+        rows = []
+        for m in r.matches[:15]:
+            eid = self.add(
+                "derived",
+                "find_similar",
+                f"match at {m.lat:.5f},{m.lon:.5f}: similarity {m.score:.2f}, {m.area_m2 / 1e4:.1f} ha ({r.years[0]} embeddings)",
+                data={"score": round(m.score, 3), "area_m2": round(m.area_m2), "bbox": m.bbox},
+                lat=m.lat,
+                lon=m.lon,
+            )
+            rows.append(
+                {
+                    "evidence": eid,
+                    "lat": round(m.lat, 5),
+                    "lon": round(m.lon, 5),
+                    "similarity": round(m.score, 3),
+                    "area_ha": round(m.area_m2 / 1e4, 1),
+                }
+            )
+        return {
+            "year": r.years[0],
+            "method": r.stats["method"],
+            "threshold": r.stats["threshold"],
+            "matches": rows,
+            "evidence": summary,
+        }
+
+    def t_semantic_change(
+        self, where: str, radius_km: float | None = None, year_from: int | None = None, year_to: int | None = None
+    ) -> dict:
+        from . import embeddings as emb
+        from .imagery import NoData
+
+        aoi = self._aoi(where, radius_km, 5.0, 30.0)
+        y1 = year_to or 2025
+        y0 = year_from or y1 - 1
+        if y0 >= y1:
+            raise ToolError("year_from must be before year_to")
+        try:
+            r = emb.remember(emb.semantic_change(aoi, y0, y1))
+        except NoData as exc:
+            raise ToolError(f"semantic_change: {exc}") from None
+        summary = self.add(
+            "derived",
+            "semantic_change",
+            f"AlphaEarth embeddings {y0} -> {y1}: {r.stats['changed_area_km2']} km2 changed "
+            f"({r.stats['share_changed']:.1%} of the area), {len(r.matches)} regions",
+            data={"result_id": r.id, **{k: v for k, v in r.stats.items() if k != "key"}},
+            lat=aoi.center[0],
+            lon=aoi.center[1],
+            links={"overlay": f"/api/embed/{r.id}/overlay.png"},
+        )
+        rows = []
+        for m in r.matches[:15]:
+            eid = self.add(
+                "derived",
+                "semantic_change",
+                f"changed {y0}->{y1} at {m.lat:.5f},{m.lon:.5f}: embedding distance {m.score:.2f}, {m.area_m2 / 1e4:.1f} ha",
+                data={"distance": round(m.score, 3), "area_m2": round(m.area_m2), "bbox": m.bbox},
+                lat=m.lat,
+                lon=m.lon,
+            )
+            rows.append(
+                {
+                    "evidence": eid,
+                    "lat": round(m.lat, 5),
+                    "lon": round(m.lon, 5),
+                    "distance": round(m.score, 3),
+                    "area_ha": round(m.area_m2 / 1e4, 1),
+                }
+            )
+        return {
+            "years": [y0, y1],
+            "stats": {k: v for k, v in r.stats.items() if k != "key"},
+            "regions": rows,
+            "evidence": summary,
+        }
+
+    def t_detect_flying_aircraft(
+        self, where: str, radius_km: float | None = None, scene_id: str | None = None, date: str | None = None
+    ) -> dict:
+        from .airborne import detect_airborne
+
+        aoi = self._aoi(where, radius_km, 10.0, 15.0)
+        scene = self._scene_for(aoi, scene_id, date, ["sentinel-2"])
+        acs = detect_airborne(scene, aoi)
+        self.store.add_scene(scene)
+        summary = self.add(
+            "derived",
+            "detect_flying_aircraft",
+            f"{len(acs)} aircraft in flight in sentinel-2 {scene.datetime:%Y-%m-%d %H:%M}Z (band-timing parallax)",
+            data={"scene_id": scene.id},
+            time=scene.datetime.isoformat(),
+            lat=aoi.center[0],
+            lon=aoi.center[1],
+        )
+        rows = []
+        for a in acs:
+            est = (
+                f"; est. {a.speed_ms * 1.944:.0f} kn heading {a.heading_deg:.0f}, ~{a.altitude_m:,.0f} m altitude"
+                if a.speed_ms is not None
+                else (f"; {a.note}" if a.note else "")
+            )
+            eid = self.add(
+                "observation",
+                "detect_flying_aircraft",
+                f"aircraft in flight at {a.lat:.5f},{a.lon:.5f}: apparent {a.apparent_speed_ms * 1.944:.0f} kn toward "
+                f"{a.apparent_heading_deg:.0f}{est}",
+                data=a.to_dict(),
+                time=a.time,
+                lat=a.lat,
+                lon=a.lon,
+                links={"chip": f"/api/scenes/{scene.id}/chip.png?lat={a.lat:.6f}&lon={a.lon:.6f}&size_m=900"},
+            )
+            rows.append({"evidence": eid, **a.to_dict()})
+        return {
+            "scene": {"id": scene.id, "time": scene.datetime.isoformat(timespec="minutes")},
+            "aircraft": rows,
+            "evidence": summary,
+        }
 
 
 def _len_bin(L: float | None) -> str:

@@ -305,6 +305,7 @@ def process_one(name: str, lookback_days: int = 30, max_scenes: int = 6) -> dict
 class AskBody(BaseModel):
     question: str
     llm: str = "auto"  # auto | on | off
+    web: bool = True
     max_calls: int = 20
     effort: str = "high"
 
@@ -322,7 +323,7 @@ def start_investigation(body: AskBody) -> dict:
     use = {"auto": None, "on": True, "off": False}.get(body.llm)
     jid = jobs.submit(
         "investigate",
-        lambda: investigate(q, store(), use, max(1, min(body.max_calls, 40)), body.effort, inv=inv).id,
+        lambda: investigate(q, store(), use, max(1, min(body.max_calls, 40)), body.effort, inv=inv, web=body.web).id,
     )
     return {"id": inv.id, "job": jid}
 
@@ -398,6 +399,154 @@ def change_image(cid: str, which: str, bbox: str | None = None) -> Response:
     if which not in ("before", "after", "overlay", "change"):
         raise HTTPException(404, "before | after | overlay | change")
     return Response(res.png(which, crop=_bbox(bbox)), media_type="image/png", headers={"Cache-Control": "max-age=3600"})
+
+
+# --------------------------------------------------------------------------- foundation model, SR, airborne
+
+
+class EmbedBody(BaseModel):
+    where: str | None = None
+    bbox: list[float] | None = None
+    radius_km: float = 10.0
+    kind: str = "similar"  # similar | change | view
+    examples: list[list[float]] | None = None  # [[lat, lon], ...]
+    negatives: list[list[float]] | None = None
+    year: int = 2025
+    year_from: int = 2017
+    segments: int = 0
+
+
+def _area(where: str | None, bbox: list[float] | None, radius_km: float, max_km: float) -> AOI:
+    try:
+        aoi = AOI(tuple(bbox)) if bbox else parse_aoi(where or "", radius_km)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    w, h = aoi.size_km()
+    if max(w, h) > max_km:
+        raise HTTPException(400, f"area too large ({max(w, h):.0f} km across > {max_km:g})")
+    return aoi
+
+
+@router.post("/embed")
+def start_embed(body: EmbedBody) -> dict:
+    aoi = _area(body.where, body.bbox, body.radius_km, 101)
+    if body.kind == "similar" and not body.examples:
+        raise HTTPException(400, "give examples: [[lat, lon], ...]")
+    return {"job": jobs.submit("embed", _embed, aoi, body)}
+
+
+def _embed(aoi: AOI, body: EmbedBody) -> dict:
+    from . import embeddings as E
+
+    if body.kind == "similar":
+        r = E.find_similar(
+            aoi, [tuple(p) for p in body.examples or []], body.year, [tuple(p) for p in body.negatives or []] or None
+        )
+    elif body.kind == "change":
+        r = E.semantic_change(aoi, body.year_from, body.year)
+    else:
+        r = E.embedding_view(aoi, body.year, body.segments)
+    return E.remember(r).geojson()
+
+
+@router.get("/embed/{rid}/overlay.png")
+def embed_overlay(rid: str) -> Response:
+    from .embeddings import recall
+
+    r = recall(rid)
+    if r is None:
+        raise HTTPException(404, "result expired; run it again")
+    return Response(r.png(), media_type="image/png", headers={"Cache-Control": "max-age=3600"})
+
+
+@router.get("/embed/years")
+def embed_years(lat: float, lon: float) -> dict:
+    from .embeddings import available_years
+
+    return {"years": available_years(lat, lon)}
+
+
+class EnhanceBody(BaseModel):
+    scene: dict
+    bbox: list[float]
+
+
+_SR: dict[str, object] = {}
+
+
+@router.post("/enhance")
+def start_enhance(body: EnhanceBody) -> dict:
+    scene = Scene.from_dict(body.scene)
+    check_scene(scene)
+    if scene.source != "sentinel-2":
+        raise HTTPException(400, "super-resolution works on Sentinel-2 scenes")
+    aoi = _area(None, body.bbox, 0, 7.7)
+    return {"job": jobs.submit("enhance", _enhance, scene, aoi)}
+
+
+def _enhance(scene: Scene, aoi: AOI) -> dict:
+    import hashlib
+
+    from pyproj import Transformer
+
+    from .superres import NOTICE, enhance
+
+    r = enhance(scene, aoi)
+    rid = hashlib.sha1(f"{scene.id}{aoi.bbox}".encode()).hexdigest()[:12]
+    _SR[rid] = r
+    while len(_SR) > 6:
+        _SR.pop(next(iter(_SR)))
+    w, s, e, n = r.grid.bounds
+    tr = Transformer.from_crs(r.grid.crs, 4326, always_xy=True)
+    corners = [list(tr.transform(x, y)) for x, y in ((w, n), (e, n), (e, s), (w, s))]
+    return {"id": rid, "corners": corners, "variant": r.variant, "notice": NOTICE, "scene": scene.id, "resolution_m": 2.5}
+
+
+@router.get("/enhance/{rid}/{which}.png")
+def enhance_png(rid: str, which: str) -> Response:
+    r = _SR.get(rid)
+    if r is None or which not in ("sr", "lr"):
+        raise HTTPException(404, "result expired or unknown image")
+    return Response(r.png(which), media_type="image/png", headers={"Cache-Control": "max-age=3600"})
+
+
+class AirborneBody(BaseModel):
+    where: str | None = None
+    bbox: list[float] | None = None
+    radius_km: float = 10.0
+    scene: dict | None = None
+
+
+@router.post("/airborne")
+def start_airborne(body: AirborneBody) -> dict:
+    aoi = _area(body.where, body.bbox, body.radius_km, 31)
+    return {"job": jobs.submit("airborne", _airborne, aoi, body.scene)}
+
+
+def _airborne(aoi: AOI, scene_dict: dict | None) -> dict:
+    from .airborne import detect_airborne
+    from .tools import Toolbox
+
+    if scene_dict:
+        scene = Scene.from_dict(scene_dict)
+        check_scene(scene)
+    else:
+        scene = Toolbox(store())._scene_for(aoi, None, None, ["sentinel-2"])
+    store().add_scene(scene)
+    acs = detect_airborne(scene, aoi)
+    feats = []
+    for a in acs:
+        d = a.to_dict()
+        d["chip"] = f"/api/scenes/{scene.id}/chip.png?lat={a.lat:.6f}&lon={a.lon:.6f}&size_m=900"
+        feats.append({"type": "Feature", "geometry": {"type": "Point", "coordinates": [a.lon, a.lat]}, "properties": d})
+    return {"type": "FeatureCollection", "properties": {"scene": scene.id, "time": scene.datetime.isoformat()}, "features": feats}
+
+
+@router.get("/scenes/{scene_id}/chip.png")
+def scene_chip(
+    scene_id: str, lat: float, lon: float, size_m: float = Query(800, ge=50, le=10000), px: int = Query(384, ge=64, le=1024)
+) -> Response:
+    return Response(_chip_png(scene_id, lat, lon, size_m, px), media_type="image/png", headers={"Cache-Control": "max-age=86400"})
 
 
 # --------------------------------------------------------------------------- orbits & patterns

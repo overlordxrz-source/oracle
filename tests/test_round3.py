@@ -216,7 +216,7 @@ def test_citation_check():
     ev = {"E1": types.SimpleNamespace(kind="observation"), "E2": types.SimpleNamespace(kind="reference")}
     c = agent.check_citations("A [E1]. B [E1, E3]. C [E2][E1].", ev)
     assert c["cited"] == ["E1", "E3", "E2"] and c["unknown"] == ["E3"] and not c["ok"]
-    assert c["cited_by_kind"] == {"observation": 1, "derived": 0, "reference": 1}
+    assert c["cited_by_kind"] == {"observation": 1, "derived": 0, "reference": 1, "report": 0}
 
 
 @pytest.mark.parametrize(
