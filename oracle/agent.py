@@ -25,6 +25,7 @@ and both modes refuse such questions up front.
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import time
@@ -38,6 +39,7 @@ from .store import Store
 from .tools import TOOLS, Toolbox, ToolError
 
 MODEL = "claude-opus-5-5"
+GROQ_MODEL_DEFAULT = os.environ.get("ORACLE_GROQ_MODEL", "openai/gpt-oss-120b")
 MAX_TOOL_CALLS = 20
 MAX_TURNS = 40
 
@@ -175,7 +177,7 @@ def investigate(
     inv: Investigation | None = None,
     web: bool = True,
 ) -> Investigation:
-    """Run an investigation. ``use_llm``: None = Claude if available else playbook.
+    """Run an investigation. ``use_llm``: None = Claude/Groq if available else playbook.
     ``web``: let Claude use web search for context (open-source reporting)."""
     store = store or Store()
     inv = inv or Investigation(question.strip())
@@ -193,7 +195,7 @@ def investigate(
             except _Unavailable as exc:
                 if use_llm:
                     raise RuntimeError(str(exc)) from None
-                _step(inv, on_step, "note", summary=f"Claude unavailable ({exc}); running the offline playbook")
+                _step(inv, on_step, "note", summary=f"LLM unavailable ({exc}); running the offline playbook")
                 _playbook(inv, on_step)
         if inv.status == "running":
             inv.status = "done"
@@ -281,6 +283,124 @@ WEB_SEARCH = {"type": "web_search_20260209", "name": "web_search", "max_uses": 5
 
 
 def _llm(inv: Investigation, max_calls: int, effort: str, on_step, web: bool = True) -> None:
+    """Provider dispatch: Claude first, then Groq (GROQ_API_KEY)."""
+    provider = os.environ.get("ORACLE_LLM_PROVIDER", "auto").lower()
+    if provider in ("claude", "anthropic"):
+        return _llm_claude(inv, max_calls, effort, on_step, web)
+    if provider == "groq":
+        return _llm_groq(inv, max_calls, on_step)
+    try:
+        return _llm_claude(inv, max_calls, effort, on_step, web)
+    except _Unavailable as exc_claude:
+        try:
+            return _llm_groq(inv, max_calls, on_step)
+        except _Unavailable as exc_groq:
+            raise _Unavailable(f"{exc_claude}; {exc_groq}") from None
+
+
+def _llm_groq(inv: Investigation, max_calls: int, on_step) -> None:
+    """Groq tool loop (OpenAI-compatible chat completions). No web search."""
+    from .llm_groq import GROQ_MODEL, chat, has_credentials, to_openai_tools
+
+    if not has_credentials():
+        raise _Unavailable("no Groq credentials (set GROQ_API_KEY)")
+    model = GROQ_MODEL
+    inv.engine = f"groq:{model}"
+    system = SYSTEM_PROMPT.format(max_calls=max_calls)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+    messages: list[dict] = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": f"Current time: {today} UTC.\n\nQuestion: {inv.question}"},
+    ]
+    tools = to_openai_tools(TOOLS)
+    calls = 0
+    final_text = ""
+    for _turn in range(MAX_TURNS):
+        try:
+            data = chat(messages, tools=tools, model=model)
+        except RuntimeError as exc:
+            if calls == 0 and ("reject" in str(exc).lower() or "credential" in str(exc).lower()):
+                raise _Unavailable(str(exc)) from None
+            if calls == 0 and ("reach" in str(exc).lower() or "rate limit" in str(exc).lower()):
+                raise _Unavailable(f"Groq API: {exc}") from None
+            raise
+        try:
+            msg = data["choices"][0]["message"]
+        except (KeyError, IndexError) as exc:
+            raise RuntimeError(f"bad Groq response: {exc}") from exc
+        content = msg.get("content") or ""
+        tool_calls = msg.get("tool_calls") or []
+        if content.strip():
+            _step(inv, on_step, "note", summary=content.strip()[:600])
+        assistant_msg: dict = {"role": "assistant", "content": content}
+        if tool_calls:
+            assistant_msg["tool_calls"] = tool_calls
+        messages.append(assistant_msg)
+        if not tool_calls:
+            final_text = content.strip()
+            break
+        runnable = []
+        for tc in tool_calls:
+            fn = (tc.get("function") or {})
+            name = fn.get("name", "")
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            if calls < max_calls:
+                calls += 1
+                runnable.append((tc.get("id", ""), name, args))
+        with ThreadPoolExecutor(max_workers=max(1, min(4, len(runnable)))) as pool:
+            ran = list(pool.map(lambda t: _run_tool(inv, on_step, t[1], dict(t[2] or {})), runnable))
+        outs = {tid: res for (tid, _, _), res in zip(runnable, ran, strict=True)}
+        for tc in tool_calls:
+            tid = tc.get("id", "")
+            fn = (tc.get("function") or {})
+            if tid not in outs:
+                messages.append(
+                    {"role": "tool", "tool_call_id": tid, "content": "tool budget exhausted", "name": fn.get("name", "")}
+                )
+                continue
+            result, err = outs[tid]
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tid,
+                    "name": fn.get("name", ""),
+                    "content": err if err else inv.toolbox.compact(result),
+                }
+            )
+        if calls >= max_calls:
+            messages.append(
+                {"role": "user", "content": "Tool budget used up. Write the final answer now from the evidence gathered."}
+            )
+    else:
+        final_text = final_text or "_(stopped: too many turns)_"
+    inv.answer = _normalize_citations(final_text) or _compose(inv, note="The model returned no text.")
+    check = check_citations(inv.answer, inv.toolbox.evidence)
+    if check["unknown"]:
+        inv.answer += (
+            f"\n\n_Provenance check: cites unknown evidence {', '.join(check['unknown'])}; treat those claims as unsupported._"
+        )
+
+
+def _normalize_citations(text: str) -> str:
+    """Map non-Claude citation styles to [E..]: 【E3】, 【E35-E38】 ranges."""
+    import re as _re
+
+    def _expand(m: _re.Match) -> str:
+        a, b = int(m.group(1)), int(m.group(2))
+        if a > b:
+            a, b = b, a
+        b = min(b, a + 20)  # sanity cap
+        return "".join(f"[E{i}]" for i in range(a, b + 1))
+
+    text = _re.sub(r"【\s*E(\d+)\s*[‑–—-]\s*E?(\d+)\s*】", _expand, text)
+    text = _re.sub(r"【\s*E(\d+)\s*】", r"[E\1]", text)
+    return text
+
+
+def _llm_claude(inv: Investigation, max_calls: int, effort: str, on_step, web: bool = True) -> None:
     try:
         import anthropic
     except ImportError as exc:
@@ -550,7 +670,7 @@ def _compose(inv: Investigation, note: str = "") -> str:
     if inv.engine == "playbook":
         out += [
             "",
-            "_Offline playbook (no LLM): fixed steps and a templated answer. Configure Claude for an analyst-led investigation._",
+            "_Offline playbook (no LLM): fixed steps and a templated answer. Set ANTHROPIC_API_KEY or GROQ_API_KEY for an analyst-led investigation._",
         ]
     return "\n".join(out)
 

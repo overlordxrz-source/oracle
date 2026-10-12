@@ -1,6 +1,6 @@
 # Oracle
 
-![Oracle map UI: Fujairah anchorage with 36 detected vessels](docs/ui.png)
+![Oracle map UI: Fujairah anchorage with 36 detected vessels](docs/ui.jpg)
 
 A free satellite OSINT workbench. Ask it a question in plain language and it
 investigates with its own tools, then answers with numbered evidence you can click.

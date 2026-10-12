@@ -171,6 +171,37 @@ def render_markdown(d: dict) -> str:
 
 
 def render_llm(d: dict, model: str = MODEL) -> str:
+    """Brief written by Claude (or Groq) from the digest. Raises RuntimeError if unavailable."""
+    import os
+
+    provider = os.environ.get("ORACLE_LLM_PROVIDER", "auto").lower()
+    if provider == "groq":
+        return render_llm_groq(d)
+    try:
+        return render_llm_claude(d, model)
+    except RuntimeError as exc_claude:
+        if provider in ("claude", "anthropic"):
+            raise
+        try:
+            return render_llm_groq(d)
+        except RuntimeError as exc_groq:
+            raise RuntimeError(f"{exc_claude}; {exc_groq}") from None
+
+
+def render_llm_groq(d: dict) -> str:
+    """Brief written by Groq (gpt-oss-120b) from the digest."""
+    from .llm_groq import has_credentials, simple_answer
+
+    if not has_credentials():
+        raise RuntimeError("no Groq credentials (set GROQ_API_KEY)")
+    payload = json.dumps(d, default=str, separators=(",", ":"))
+    try:
+        return simple_answer(SYSTEM_PROMPT, f"Digest:\n```json\n{payload}\n```\nWrite the brief.")
+    except RuntimeError as exc:
+        raise RuntimeError(f"Groq brief failed: {exc}") from exc
+
+
+def render_llm_claude(d: dict, model: str = MODEL) -> str:
     """Brief written by Claude from the digest. Raises RuntimeError if unavailable."""
     try:
         import anthropic
@@ -210,18 +241,32 @@ def render_llm(d: dict, model: str = MODEL) -> str:
 def brief(
     store: Store, since: datetime | None = None, sites: list[str] | None = None, use_llm: bool | None = None
 ) -> tuple[str, str]:
-    """-> (markdown, engine) where engine is "claude" or "template"."""
+    """-> (markdown, engine) where engine is "claude", "groq" or "template"."""
     since = since or datetime.now(timezone.utc) - timedelta(days=7)
     d = digest(store, since, sites)
     if use_llm is not False:
         try:
-            return render_llm(d), "claude"
+            md = render_llm(d)
+            import os
+
+            engine = "groq" if os.environ.get("ORACLE_LLM_PROVIDER", "auto").lower() == "groq" else _brief_engine()
+            return md, engine
         except RuntimeError as exc:
             if use_llm:
                 raise
-            note = f"\n\n_(Claude brief unavailable: {exc}; showing the built-in report.)_"
+            note = f"\n\n_(LLM brief unavailable: {exc}; showing the built-in report.)_"
             return render_markdown(d) + note, "template"
     return render_markdown(d), "template"
+
+
+def _brief_engine() -> str:
+    import os
+
+    if os.environ.get("GROQ_API_KEY") and not (
+        os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
+    ):
+        return "groq"
+    return "claude"
 
 
 __all__ = ["digest", "render_markdown", "render_llm", "brief"]

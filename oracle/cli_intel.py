@@ -532,6 +532,9 @@ def cmd_doctor(args) -> None:
     row("anthropic sdk", "installed" if importlib.util.find_spec("anthropic") else 'missing (pip install -e ".[llm]")')
     has_key = bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
     row("credentials", "env var set" if has_key else "none in env (ant auth login profiles also work)")
+    row("groq key", "env var set" if os.environ.get("GROQ_API_KEY") else "none in env (set GROQ_API_KEY)")
+    row("groq model", os.environ.get("ORACLE_GROQ_MODEL", "openai/gpt-oss-120b"))
+    row("llm provider", os.environ.get("ORACLE_LLM_PROVIDER", "auto (claude first, then groq)"))
     print("foundation models")
     aef = CACHE_DIR / "aef"
     blocks = sum(f.stat().st_size for f in (aef / "blocks").rglob("*.npy")) if (aef / "blocks").exists() else 0
@@ -637,11 +640,11 @@ def register(sub) -> None:
     sp.add_argument("--limit", type=int, default=50)
     sp.set_defaults(fn=cmd_events)
 
-    sp = sub.add_parser("brief", help="intelligence brief (Claude if configured, else built-in)")
+    sp = sub.add_parser("brief", help="intelligence brief (Claude/Groq if configured, else built-in)")
     sp.add_argument("--since", default="7d")
     sp.add_argument("--sites")
     g = sp.add_mutually_exclusive_group()
-    g.add_argument("--llm", action="store_true", help="require Claude")
+    g.add_argument("--llm", action="store_true", help="require LLM (Claude or Groq)")
     g.add_argument("--no-llm", action="store_true", help="built-in report only")
     sp.add_argument("-o", "--out")
     sp.set_defaults(fn=cmd_brief)
@@ -675,7 +678,7 @@ def register(sub) -> None:
     sp = sub.add_parser("ask", help="ask Oracle a question; it investigates with its tools and cites evidence")
     sp.add_argument("question")
     g = sp.add_mutually_exclusive_group()
-    g.add_argument("--llm", action="store_true", help="require Claude")
+    g.add_argument("--llm", action="store_true", help="require LLM (Claude or Groq)")
     g.add_argument("--no-llm", action="store_true", help="offline playbook only")
     sp.add_argument("--max-calls", type=int, default=20, help="tool-call budget")
     sp.add_argument("--effort", default="high", choices=("low", "medium", "high", "xhigh", "max"))
